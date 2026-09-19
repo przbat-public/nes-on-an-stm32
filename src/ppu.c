@@ -48,13 +48,17 @@ static uint8_t  suppress_vblank;
 
 /* ---------------------------- nametables -------------------------- */
 
+/* 0 = horizontal, 1 = vertical, 2 = one-screen lower, 3 = one-screen
+ * upper (MMC1 carts switch between these while the game runs) */
 static uint16_t nt_index(uint16_t addr)
 {
     uint16_t a = (uint16_t)((addr - 0x2000) & 0x0FFF);
-    if (ppu_mirroring == 1)                 /* vertical: NT0|NT1      */
-        return (uint16_t)(a & 0x7FF);
-    /* horizontal: NT0/NT1 stacked */
-    return (uint16_t)((((a >> 11) & 1) << 10) | (a & 0x3FF));
+    switch (ppu_mirroring) {
+    case 1:  return (uint16_t)(a & 0x7FF);                       /* vertical */
+    case 2:  return (uint16_t)(a & 0x3FF);                       /* NT0      */
+    case 3:  return (uint16_t)(0x400 | (a & 0x3FF));             /* NT1      */
+    default: return (uint16_t)((((a >> 11) & 1) << 10) | (a & 0x3FF));
+    }
 }
 
 uint8_t ppu_read_vram(uint16_t addr)
@@ -325,11 +329,17 @@ void ppu_render_scanline(int y)
 
 /* ------------------------- per-line scrolling --------------------- */
 
+volatile uint32_t dbg_mask, dbg_ctrl, dbg_v, dbg_t;
+
 void ppu_end_scanline(int y)
 {
-    (void)y;
-    if (!(mask & 0x18))
-        return;                                     /* rendering off */
+    if (y == 261) { dbg_mask = mask; dbg_ctrl = ctrl; dbg_v = v; dbg_t = t; }
+    /* v advances only while the visible lines are drawn; the pre-render
+     * line reloads it from t. Incrementing during vblank as well would
+     * shift the picture down by 22 lines every frame and wrap the
+     * nametable. */
+    if (y >= 240 || !(mask & 0x18))
+        return;
     /* increment the vertical part of v, like the real PPU does */
     if ((v & 0x7000) != 0x7000) {
         v = (uint16_t)(v + 0x1000);

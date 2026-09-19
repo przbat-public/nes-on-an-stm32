@@ -203,7 +203,7 @@ def build_program(index, shape, nt_bytes, attr_bytes):
     L("LDX #$00")
     L("palloop:", "LDA pals,X", "STA $2007", "INX", "CPX #$20", "BNE palloop")
 
-    # nametable + attribute table
+    # nametable + attribute table (generated from the Python layout)
     L("LDA #$20", "STA $2006", "LDA #$00", "STA $2006")
     for b in nt_bytes:
         L(f"LDA #${b:02X}", "STA $2007")
@@ -275,6 +275,182 @@ def build_program(index, shape, nt_bytes, attr_bytes):
     return a.assemble()
 
 
+# ----------------------------------------------------------------- MMC1
+# A second cartridge that exercises the MMC1: PRG banking, CHR banking
+# and the nametable mirroring modes. The results are stored in RAM at
+# $0300.. and also shown on screen as digits (1 = pass, 0 = fail).
+
+def mmc1_write(a, value, addr, label=""):
+    """Emit the five serial writes that load one MMC1 register."""
+    for i in range(5):
+        a.line(f"; MMC1 {label} bit {i}")
+        a.line(f"LDA #${(value >> i) & 1:02X}", f"STA ${addr:04X}")
+
+
+def build_mmc1_rom(index, shape):
+    """A cartridge that exercises the MMC1: PRG banking, CHR banking and
+    the nametable mirroring modes. Results land in RAM at $0300..$030F and
+    are also shown on screen as digits (1 = pass)."""
+    from asm6502 import Assembler
+    BANKS = 4
+    main_bank = BANKS - 1
+
+    # ---- switchable banks: a routine at $8000 leaving a marker in RAM
+    banks, magics = [], []
+    for n in range(main_bank):
+        magic = 0xA5 ^ (n * 0x11)
+        magics.append(magic)
+        b = Assembler(0x8000)
+        b.line(f"bank{n}_entry:")
+        b.line(f"LDA #${magic:02X}")
+        b.line(f"STA ${0x0300 + n:04X}")
+        b.line("RTS")
+        banks.append(b.assemble()[:16384].ljust(16384, b"\xFF"))
+
+    # ---- the fixed bank ($C000, PRG mode 3): tests then display
+    a = Assembler(0xC000)
+    L = a.line
+
+    def mmc1(value, addr, label):
+        for i in range(5):
+            L(f"; MMC1 {label}: bit {i}")
+            L(f"LDA #${(value >> i) & 1:02X}", f"STA ${addr:04X}")
+
+    L("reset:")
+    L("SEI", "CLD", "LDX #$FF", "TXS")
+    L("LDA #$00", "STA $2000", "STA $2001")     # rendering off
+    L("w1:", "LDA $2002", "BPL w1")
+    L("w2:", "LDA $2002", "BPL w2")
+    L("LDA #$FF", "LDX #$00")
+    L("ocl:", "STA $0200,X", "INX", "BNE ocl")
+
+    # ================= test 1: PRG banking =================
+    mmc1(0x0C, 0x8000, "control: PRG mode 3, CHR 8K, one-screen low")
+    for n in range(main_bank):
+        mmc1(n, 0xE000, f"PRG bank {n}")
+        L("JSR $8000")                          # the bank's own routine
+    L("LDA #$00", "STA $08")
+    for n, magic in enumerate(magics):
+        L(f"LDA ${0x0300 + n:04X}")
+        L(f"CMP #${magic:02X}")
+        L(f"BNE skip{n}")
+        L("LDA $08", "ORA #$01", "STA $08")
+        L(f"skip{n}:")
+
+    # ================= test 2: CHR banking =================
+    mmc1(0x02, 0xA000, "CHR bank 1 (8K units)")
+    L("LDA #$00", "STA $2006", "STA $2006")     # PPUADDR = $0000
+    L("LDA $2007")                              # discard the buffered read
+    L("LDA $2007")
+    L("CMP #$FF")                               # marker byte of CHR bank 1
+    L("BNE skipc")
+    L("LDA $08", "ORA #$02", "STA $08")
+    L("skipc:")
+    mmc1(0x00, 0xA000, "CHR bank 0 again")
+    L("LDA #$00", "STA $2006", "STA $2006")
+
+    # ================= test 3: mirroring =================
+    mmc1(0x0C, 0x8000, "control: one-screen lower")
+    L("LDA #$20", "STA $2006", "LDA #$00", "STA $2006")
+    L("LDA #$5A", "STA $2007")                  # $2000 = $5A
+    L("LDA #$2C", "STA $2006", "LDA #$00", "STA $2006")
+    L("LDA $2007", "LDA $2007")                 # read $2C00
+    L("CMP #$5A")                               # one-screen: aliases
+    L("BNE skipm")
+    L("LDA $08", "ORA #$04", "STA $08")
+    L("skipm:")
+    mmc1(0x0F, 0x8000, "control: horizontal")
+    L("LDA #$20", "STA $2006", "LDA #$00", "STA $2006")
+    L("LDA #$A5", "STA $2007")                  # $2000 = $A5
+    L("LDA #$28", "STA $2006", "LDA #$00", "STA $2006")
+    L("LDA $2007", "LDA $2007")                 # $2800: other nametable
+    L("CMP #$A5")
+    L("BEQ skipm2")                             # must NOT match
+    L("LDA $08", "ORA #$08", "STA $08")
+    L("skipm2:")
+    L("LDA $08", "STA $030F")                   # result byte for the host
+
+    # ================= display =================
+    L("LDA #$3F", "STA $2006", "LDA #$00", "STA $2006")
+    L("LDX #$00")
+    L("pl:", "LDA pals,X", "STA $2007", "INX", "CPX #$20", "BNE pl")
+
+    lines = {}
+    def put(row, col, s):
+        for i, ch in enumerate(s):
+            lines.setdefault(row, {})[col + i] = index[ch]
+    put(2, 2, "MMC1 CARTRIDGE TEST")
+    put(4, 1, "1 PRG BANKING")
+    put(6, 1, "2 CHR BANKING")
+    put(8, 1, "3 MIRRORING")
+    put(11, 1, "RESULTS 1 OK 0 FAIL")
+    put(14, 1, "PRG MODE 3 FIXED LAST")
+    put(16, 1, "SERIAL REGISTER WRITES")
+    put(18, 1, "ONE SCREEN AND HORIZONTAL")
+    put(20, 1, "CHR 8K BANK SWITCHING")
+    put(22, 1, "ALL ORIGINAL HOMEBREW ROM")
+
+    result_cells = {1: (4, 22), 2: (6, 22), 3: (8, 22)}
+    L("LDA #$20", "STA $2006", "LDA #$00", "STA $2006")
+    for r in range(30):
+        cells = [index[' ']] * 32
+        for c, t in lines.get(r, {}).items():
+            cells[c] = t
+        for t, (rr, cc) in result_cells.items():
+            if rr == r:
+                cells[cc] = index['0']
+        for b in cells:
+            L(f"LDA #${b:02X}", "STA $2007")
+    for _ in range(64):
+        L("LDA #$00", "STA $2007")              # attribute table
+
+    for t, (r, c) in result_cells.items():
+        L("LDA $08", f"AND #${1 << (t - 1):02X}")
+        L(f"BEQ rf{t}")
+        L(f"LDA #${index['1']:02X}")
+        L(f"JMP rd{t}")
+        L(f"rf{t}:", f"LDA #${index['0']:02X}")
+        L(f"rd{t}:", "PHA")
+        L(f"LDA #${0x20 + r:02X}", "STA $2006")
+        L(f"LDA #${c:02X}", "STA $2006")
+        L("PLA", "STA $2007")
+
+    # the scroll register t also carries the nametable bits, and the VRAM
+    # address writes above clobbered them - so PPUCTRL must be written
+    # again before the scroll, exactly as a real game does
+    L("LDA #$00", "STA $2000")                  # nametable 0, pattern 0
+    L("LDA #$00", "STA $2005", "STA $2005")
+    L("LDA #$0A", "STA $2001")                  # background on
+    L("main:", "JMP main")
+    L("nmi:", "RTI")
+    L("irq:", "RTI")
+    L("pals:")
+    L(".byte $0F,$21,$11,$30")
+    L(".byte $0F,$16,$27,$30")
+    L(".byte $0F,$1A,$2A,$30")
+    L(".byte $0F,$12,$22,$30")
+    L(".byte $0F,$16,$27,$30")
+    L(".byte $0F,$1A,$2A,$30")
+    L(".byte $0F,$12,$22,$30")
+    L(".byte $0F,$30,$10,$00")
+    L(".org $FFFA")
+    L(".word nmi, reset, irq")
+    main_code = a.assemble()
+
+    chr_font = build_chr()[0][:8192]            # bank 0: normal artwork
+    chr_marker = bytes([0xFF] * 8192)           # bank 1: marker pattern
+
+    header = bytearray(b"NES\x1a")
+    header.append(BANKS)
+    header.append(2)
+    header.append(0x10)                         # mapper 1 (MMC1)
+    header.append(0x00)
+    header += bytes(8)
+
+    prg = b"".join(banks) + main_code.ljust(16384, b"\xFF")
+    return bytes(header) + prg + chr_font + chr_marker
+
+
 def main():
     chr_data, index, shape = build_chr()
     nt_bytes, attr_bytes = build_nametable(index, shape)
@@ -296,6 +472,13 @@ def main():
 
     rom = bytes(header) + prg + chr_data
     os.makedirs("build", exist_ok=True)
+    if "--mmc1" in sys.argv:
+        mmc1 = build_mmc1_rom(index, shape)
+        path = os.path.join("build", "mmc1.nes")
+        with open(path, "wb") as f:
+            f.write(mmc1)
+        print(f"wrote {path}: {len(mmc1)} bytes (MMC1, 4 x 16K PRG, 2 x 8K CHR)")
+        return 0
     path = os.path.join("build", "test.nes")
     with open(path, "wb") as f:
         f.write(rom)

@@ -124,3 +124,40 @@ host frame 675: (next frame already ~1500)
 A one-frame misalignment shows up as ~4% of the 61,440 pixels, so a match
 of a few hundred pixels is a very sharp lock. That is how every change to
 the PPU or the DMA path is checked.
+
+## 8. The picture that was 22 lines too low (a real PPU bug)
+
+The NROM self-test rendered, so the PPU looked fine. Writing the MMC1
+cartridge exposed the truth: its screen came out **black** while its RAM
+results said every test passed.
+
+The PPU's address register `v` was being advanced once per scanline for
+*all 262 lines* of the frame. A real PPU advances it only while the 240
+visible lines are drawn; the pre-render line then reloads `v` from the
+scroll register. Advancing during vblank pushed the picture 22 lines
+down, and — because the nametable wraps every 30 rows — flipped the
+renderer into the *other* nametable, which was empty. Black screen.
+
+**Fix:** `ppu_end_scanline()` returns early for `y >= 240`. The NROM
+frame changed too (for the better: it had been quietly shifted all
+along), and the sharp frame comparison against the PC went from 254 to
+**113 differing pixels of 61,440**.
+
+## 9. The cartridge that clobbered its own scroll (twice)
+
+Two more bugs in my own MMC1 test cartridge, both of which the emulator
+exposed by behaving like real hardware:
+
+1. `$2006` (VRAM address) writes **rewrite the scroll register** `t`.
+   The mirroring test pointed `$2006` at `$2800`, which left bit 11 set
+   in `t` — the nametable select. Writing `$2005` afterwards does not
+   clear it, so the screen rendered from the wrong (empty) nametable.
+   Real games write `$2000` (PPUCTRL) *before* the scroll; adding that
+   one write fixed it.
+2. The register select for MMC1 serial writes comes from the address
+   (`$8000` control, `$A000` CHR 0, `$C000` CHR 1, `$E000` PRG) — writing
+   all five bits to the wrong address silently does nothing.
+
+**Lesson (again):** a faithful emulator is a debugger for your own ROM.
+Both bugs were found by dumping the board's framebuffer and the emulated
+PPU state, not by staring at the assembler.

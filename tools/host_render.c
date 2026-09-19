@@ -68,5 +68,12 @@ int main(int argc, char **argv)
     printf("ran %d frames, cpu %u instructions / %u cycles, "
            "wrote %s (checksum %08X)\n",
            frames, cpu.instructions, cpu.cycles, name, sum);
+
+    /* the cartridge test ROMs leave their results in RAM at $0300.. */
+    const uint8_t *ram = nes_ram();
+    printf("RAM $0300: ");
+    for (int i = 0; i < 16; i++)
+        printf("%02X ", ram[0x300 + i]);
+    printf("\n");
     return 0;
 }

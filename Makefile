@@ -20,13 +20,13 @@ CFLAGS  = -mcpu=cortex-m4 -mthumb -mfloat-abi=soft -O2 -g \
           -DNES_BUS_INLINE -DNES_PROFILING
 
 SRCS    = src/main.c src/hal.c src/lcd.c src/input.c \
-          src/cpu6502.c src/ppu.c src/nes.c \
+          src/cpu6502.c src/ppu.c src/nes.c src/mapper.c \
           src/font5x7.c src/rom_data.c
 OBJS    = $(SRCS:.c=.o) src/startup_l476.o
 
 HOSTCC  ?= cc
 HOSTCFLAGS = -O2 -Wall -Wextra -Isrc -Ibuild
-HOST_SRCS  = src/cpu6502.c src/ppu.c src/nes.c
+HOST_SRCS  = src/cpu6502.c src/ppu.c src/nes.c src/mapper.c
 
 .PHONY: all flash rom romdata host-test host-rom clean
 

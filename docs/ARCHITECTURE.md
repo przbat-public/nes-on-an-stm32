@@ -81,6 +81,22 @@ Two details that cost real performance work:
    row buffer, then blended. Fetching two bytes per pixel through a
    function pointer was one of the biggest costs in the frame.
 
+## The mappers (`mapper.c`)
+
+Cartridges are not flat memory: games switch banks while they run. The
+mapper layer publishes **bank pointers** instead of touching the bus, and
+the inline accessors read through them, so a bank switch costs two
+pointer writes and nothing else:
+
+- **NROM** (mapper 0): pointers set once — 16 KB carts mirror the single
+  bank at both `$8000` and `$C000`, 32 KB carts map straight through.
+- **MMC1** (mapper 1): five-bit serial writes to `$8000-$FFFF`; the
+  address bits pick the register (control / CHR bank 0 / CHR bank 1 /
+  PRG bank). The control register's low bits select the nametable
+  arrangement — including the two **one-screen** modes, which is why the
+  PPU has four mirroring settings rather than two — while bits 2-3 pick
+  one of the four PRG banking modes and bit 4 the CHR bank size.
+
 ## The machine (`nes.c`)
 
 The NES memory map with its quirks: 2 KB of RAM mirrored four times, PPU

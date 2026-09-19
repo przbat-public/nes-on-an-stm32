@@ -15,6 +15,7 @@
 #include "cpu6502.h"
 #include "ppu.h"
 #include "nesmem.h"
+#include "mapper.h"
 
 int nes_mapper;
 int nes_prg_banks;
@@ -25,17 +26,15 @@ void (*nes_line_hook)(int y, const uint8_t *line);
 /* ----------------------------- cartridge -------------------------- */
 
 uint8_t nes_ram_2k[0x800];         /* 2 KB console RAM (see nesmem.h) */
-static uint8_t  wram[0x800];       /* 2 KB cartridge work RAM         */
-                                   /* ($6000-$7FFF mirrored; NROM     */
-                                   /*  games rarely use more)         */
+static uint8_t  wram[0x2000];      /* 8 KB cartridge work RAM         */
 static uint8_t  chr_ram[0x2000];   /* used when the cart has CHR-RAM  */
 
-const uint8_t *nes_prg = 0;
-uint32_t       nes_prg_mask = 0;
-const uint8_t *nes_chr = 0;
+const uint8_t *nes_prg_lo = 0;
+const uint8_t *nes_prg_hi = 0;
+const uint8_t *nes_chr_lo = 0;
+const uint8_t *nes_chr_hi = 0;
 uint8_t       *nes_chr_ram = 0;
 int            nes_chr_is_ram = 0;
-static uint32_t prg_size = 0;
 
 /* the PPU fetches patterns through this pointer, set at reset */
 static uint8_t chr_read_fn(uint16_t addr) { return chr_read(addr); }
@@ -82,12 +81,14 @@ uint8_t nes_bus_read_slow(uint16_t addr)
         return 0;                       /* APU / IO registers     */
     if (addr < 0x6000)
         return 0;                       /* expansion              */
-    return wram[addr & 0x7FF];
+    return wram[addr & 0x1FFF];         /* cartridge work RAM     */
 }
 
 void nes_bus_write_slow(uint16_t addr, uint8_t v)
 {
-    if (addr < 0x4000) {
+    if (addr < 0x2000) {
+        nes_ram_2k[addr & 0x7FF] = v;           /* fast path mirror */
+    } else if (addr < 0x4000) {
         ppu_write_reg((uint16_t)(addr & 7), v);
     } else if (addr == 0x4014) {
         /* OAM DMA: copy a page of RAM into sprite memory */
@@ -102,9 +103,10 @@ void nes_bus_write_slow(uint16_t addr, uint8_t v)
     } else if (addr < 0x6000) {
         /* expansion */
     } else if (addr < 0x8000) {
-        wram[addr & 0x7FF] = v;
+        wram[addr & 0x1FFF] = v;
+    } else {
+        mapper_write(addr, v);                  /* mapper registers */
     }
-    /* writes to PRG ROM are ignored */
 }
 
 /* ---------------------------- iNES loader ------------------------- */
@@ -126,30 +128,27 @@ int nes_load(const uint8_t *rom, uint32_t size)
     nes_prg_banks = prg_banks;
     nes_chr_banks = chr_banks;
 
-    if (mapper != 0)
-        return NES_ERR_MAPPER;           /* only NROM for now */
+    if (mapper != MAPPER_NROM && mapper != MAPPER_MMC1)
+        return NES_ERR_MAPPER;           /* NROM and MMC1 for now */
 
     uint32_t need = (uint32_t)(16 + trainer + prg_banks * 16384
                                + (chr_banks ? chr_banks * 8192 : 0));
     if (size < need)
         return NES_ERR_SIZE;
 
-    nes_prg = rom + 16 + trainer;
-    prg_size = (uint32_t)(prg_banks * 16384);
-    nes_prg_mask = (prg_banks == 1) ? 0x3FFF : 0x7FFF;
+    const uint8_t *prg = rom + 16 + trainer;
+    uint32_t prg_size = (uint32_t)(prg_banks * 16384);
+    const uint8_t *chr = prg + prg_size;
+    uint32_t chr_size = (uint32_t)(chr_banks * 8192);
 
-    if (chr_banks == 0) {
-        nes_chr_is_ram = 1;
-        nes_chr = 0;
-        nes_chr_ram = chr_ram;
-    } else {
-        nes_chr_is_ram = 0;
-        nes_chr = nes_prg + prg_size;
-        nes_chr_ram = chr_ram;
-    }
+    nes_chr_is_ram = (chr_banks == 0);
+    nes_chr_ram = chr_ram;
 
-    /* mirroring: bit 0 clear = horizontal, set = vertical */
+    /* header mirroring: bit 0 clear = horizontal, set = vertical (MMC1
+     * carts override this while the game runs) */
     ppu_mirroring = (flags6 & 1) ? 1 : 0;
+
+    mapper_init(mapper, prg, prg_size, chr, chr_size);
     return NES_OK;
 }
 
@@ -158,7 +157,7 @@ int nes_load(const uint8_t *rom, uint32_t size)
 void nes_reset(void)
 {
     for (int i = 0; i < 0x800; i++)  nes_ram_2k[i] = 0;
-    for (int i = 0; i < 0x800; i++)  wram[i] = 0;
+    for (int i = 0; i < 0x2000; i++) wram[i] = 0;
     for (int i = 0; i < 0x2000; i++) chr_ram[i] = 0;
     pad_state = pad_shift = 0;
     pad_strobe = false;
