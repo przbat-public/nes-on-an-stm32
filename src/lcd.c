@@ -17,6 +17,14 @@
 #include "hal.h"
 #include "font5x7.h"
 
+#ifdef NES_PROFILING
+extern uint32_t cycles_now(void);
+#define CYC_NOW() cycles_now()
+#else
+#define CYC_NOW() 0u
+#endif
+
+
 /* display control pins (Arduino route on the GFX01M2 shield) */
 #define PIN_CS  9    /* PA9  */
 #define PIN_DC  10   /* PB10 */
@@ -32,12 +40,17 @@ static uint8_t  fb[FB_W * LCD_H];      /* 256 x 240 indices */
 extern volatile uint32_t dbg_lines;
 volatile uint32_t lcd_dbg_band_ok;
 static uint16_t pal[64];
+/* The ST7789 wants the high byte of each pixel first, so the staging buffer
+ * holds byte-swapped RGB565. Swapping in the palette once per boot turns
+ * the per-pixel conversion into a single 16-bit load and store. */
+static uint16_t pal_sw[64];
+volatile uint32_t dbg_lcd_conv_ok;   /* set by the boot self-check */
 
 /* Band staging (4 KB): the CPU converts a band here, the DMA streams it
  * out while the PPU renders the next band. Only ONE transfer can be in
  * flight: SPI1_TX is wired to a single DMA channel, and starting a second
  * transfer would overwrite the first one's registers mid-flight. */
-static uint8_t stage[BAND_BYTES];
+static uint16_t stage[BAND_BYTES / 2];   /* 16-bit aligned on purpose */
 static int     dma_inflight;
 
 /* ------------------------------------------------------------ palette */
@@ -109,12 +122,34 @@ static void push_rect(int x0, int y0, int w, int h)
     cs(1);
 }
 
+/* A wrong byte order in the band conversion shows up as wrong colours on
+ * the panel and nowhere else, so the firmware checks the conversion once
+ * at boot against bytes worked out from the NES palette by hand. */
+static void lcd_conv_selfcheck(void)
+{
+    static const uint8_t src[4]   = { 0x0F, 0x21, 0x30, 0x16 };
+    static const uint8_t want[8]  = { 0x00, 0x00, 0x4C, 0xDD,
+                                      0xEF, 0x7D, 0x99, 0x04 };
+    uint16_t got16[4];
+    const uint8_t *got = (const uint8_t *)got16;
+
+    for (int i = 0; i < 4; i++)
+        got16[i] = pal_sw[src[i] & 0x3F];
+
+    dbg_lcd_conv_ok = 1;
+    for (int i = 0; i < 8; i++)
+        if (got[i] != want[i]) dbg_lcd_conv_ok = 0;
+}
+
 void lcd_init(void)
 {
     uint8_t v;
 
-    for (int i = 0; i < 64; i++)
+    for (int i = 0; i < 64; i++) {
         pal[i] = rgb565(NES_RGB[i][0], NES_RGB[i][1], NES_RGB[i][2]);
+        pal_sw[i] = (uint16_t)((pal[i] >> 8) | (pal[i] << 8));
+    }
+    lcd_conv_selfcheck();
 
     for (uint32_t i = 0; i < sizeof(fb); i++) fb[i] = 0x0F;   /* black */
 
@@ -184,47 +219,47 @@ void lcd_show_fps(int fps)
 
 /* ------------------------------------------------------ SPI streaming */
 
+volatile uint32_t dbg_cyc_band, dbg_cyc_wait;   /* where a frame goes */
+
 static void push_band(int y0)
 {
+    uint32_t t0 = CYC_NOW();
     /* the previous band must be off the wire before we reuse the buffer
      * (it has had a whole band's worth of rendering time to finish) */
     while (dma_inflight > 0) {
         spi_dma_wait();
         dma_inflight--;
     }
+    dbg_cyc_wait += CYC_NOW() - t0;
+    t0 = CYC_NOW();
 
-    uint8_t *dst = stage;
+    uint16_t *dst = stage;
     const uint8_t *src = fb + (uint32_t)y0 * FB_W;
 
-    for (int i = 0; i < NES_W * BAND_H; i++) {
-        uint16_t c = pal[src[i] & 0x3F];
-        dst[0] = (uint8_t)(c >> 8);        /* ST7789 wants MSB first */
-        dst[1] = (uint8_t)(c & 0xFF);
-        dst += 2;
+    for (int i = 0; i < NES_W * BAND_H; i += 4) {
+        dst[i + 0] = pal_sw[src[i + 0] & 0x3F];
+        dst[i + 1] = pal_sw[src[i + 1] & 0x3F];
+        dst[i + 2] = pal_sw[src[i + 2] & 0x3F];
+        dst[i + 3] = pal_sw[src[i + 3] & 0x3F];
     }
 
     set_window(NES_X, (uint16_t)y0, (uint16_t)(NES_X + NES_W - 1),
                (uint16_t)(y0 + BAND_H - 1));
     dc(1); cs(0);
+    dbg_cyc_band += CYC_NOW() - t0;
     if (spi_dma_available()) {
-        spi_dma_start(stage, BAND_BYTES);
+        spi_dma_start((const uint8_t *)stage, BAND_BYTES);
         dma_inflight = 1;
         lcd_dbg_band_ok = 1;
     } else {
         /* no DMA: shift the band out with the CPU */
-        spi_write(stage, BAND_BYTES);
+        spi_write((const uint8_t *)stage, BAND_BYTES);
         cs(1);
     }
 }
 
 extern volatile uint32_t dbg_cyc_flush;
 
-#ifdef NES_PROFILING
-extern uint32_t cycles_now(void);
-#define CYC_NOW() cycles_now()
-#else
-#define CYC_NOW() 0u
-#endif
 
 void lcd_nes_line(int y, const uint8_t *line)
 {

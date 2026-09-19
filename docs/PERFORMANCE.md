@@ -87,3 +87,35 @@ grep -E "dbg_cyc_(cpu|ppu|flush|frame)" emu.map
 plus `dbg_frames` (frames rendered) and `dbg_fps` (the rate the firmware
 itself measures from the cycle counter), which is also printed in the
 top-left corner of the picture for the first few seconds after boot.
+
+## Measured again, on the board (Prince of Persia, UxROM)
+
+Counters are the DWT cycle counter at 80 MHz, read over SWD while the game
+runs; `dbg_cyc_*` in `.bss` carries them.
+
+| stage | cycles | time |
+|---|---|---|
+| 6502 core (`dbg_cyc_cpu`) | 1 447 077 | 18.1 ms |
+| PPU scanline renderer (`dbg_cyc_ppu`) | 83 881 | 1.0 ms |
+| band conversion + staging (`dbg_cyc_flush`) | 1 192 137 | 14.9 ms |
+
+Two things follow from that, and one of them is a hard ceiling:
+
+1. **The display link is a floor.** A frame is 61,440 pixels = 122,880 bytes
+   over SPI at 40 MHz = **24.6 ms of wire time**, no matter how fast the
+   emulation gets. 30 fps means a 33 ms budget, so emulation plus
+   conversion has to fit in ~8 ms — that is a different class of work than
+   the current 33 ms.
+2. **Half of the frame is not in these counters at all** (~15 ms): the
+   30 band windows (`set_window`: 3 commands plus 2 data phases with CS
+   toggling each) and the DMA waits. Those are the next things to measure
+   and cut — fewer, larger bands would cut both, at the cost of more
+   staging RAM.
+
+What was already cut: the band conversion now swaps bytes in the palette
+once at boot (`pal_sw[]`) and writes 16-bit values four pixels at a time,
+instead of two 8-bit stores per pixel with a shift each. Prince of Persia
+went from 20 to 22 fps, and `lcd_conv_selfcheck()` verifies the byte order
+at every boot against bytes worked out from the NES palette by hand
+(`dbg_lcd_conv_ok`), because a wrong byte order here would show up only as
+wrong colours on the panel.
