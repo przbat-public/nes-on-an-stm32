@@ -86,9 +86,12 @@ void system_init(void)
     RCC_APB2ENR |= (1u << 12);                          /* SPI1      */
     clk_sync(); (void)RCC_APB2ENR;
 
-    /* SPI1: master, 8-bit, mode 0, fPCLK/2 = 40 MHz, software NSS */
+    /* SPI1: master, 8-bit, mode 0, fPCLK/2 = 40 MHz, software NSS.
+     * FRXTH (CR2 bit 12) makes RXNE go high for every single received byte
+     * instead of every second one — the panel readback (lcd.c) reads one
+     * byte at a time and would otherwise wait forever for the first. */
     SPI1_CR1 = (1u << 2) | (1u << 8) | (1u << 9);
-    SPI1_CR2 = (7u << 8);
+    SPI1_CR2 = (7u << 8) | (1u << 12);
     SPI1_CR1 |= (1u << 6);
 
     /* display pins: PA5/6/7 = SPI1 SCK/MISO/MOSI (AF5),
@@ -143,6 +146,64 @@ void spi_write(const uint8_t *buf, uint32_t n)
         SPI1_DR8 = *buf++;
     }
     while (SPI1_SR & (1u << 7)) {}            /* drain (BSY) */
+}
+
+/* Full-duplex read: the master has to clock the panel to get its bits, so
+ * every byte read sends 0xFF (the panel ignores MOSI while it is driving
+ * SDO after a RAMRD). FRXTH is set in system_init, so RXNE means exactly
+ * one byte is waiting. */
+void spi_read(uint8_t *buf, uint32_t n)
+{
+    while (n--) {
+        while (!(SPI1_SR & (1u << 1))) {}     /* TXE */
+        SPI1_DR8 = 0xFF;
+        while (!(SPI1_SR & (1u << 0))) {}     /* RXNE */
+        *buf++ = SPI1_DR8;
+    }
+}
+
+/* Drop anything left in the receive FIFO (a stray byte would shift a
+ * readback by one for the rest of the transfer) */
+void spi_rx_flush(void)
+{
+    while (SPI1_SR & (1u << 0))               /* RXNE */
+        (void)SPI1_DR8;
+}
+
+/* BR[2:0] of CR1: 0 = fPCLK/2 (40 MHz), 2 = fPCLK/8 (10 MHz). The panel's
+ * SDO does not have to keep up with the 40 MHz the picture is clocked out
+ * at, so the readback falls back to a slower clock if the fast one returns
+ * nothing. Changing it means stopping the peripheral (RM0351 requires BR
+ * to be written while SPE = 0). */
+void spi_set_baud(uint32_t br)
+{
+    while (SPI1_SR & (1u << 7)) {}            /* BSY */
+    SPI1_CR1 &= ~(1u << 6);                   /* SPE off */
+    SPI1_CR1 = (SPI1_CR1 & ~(7u << 3)) | ((br & 7u) << 3);
+    SPI1_CR1 |= (1u << 6);                    /* SPE on  */
+}
+
+/* Diagnostic: sample PA6 (SPI1_MISO, the panel's SDO) 32 times as a plain
+ * GPIO input with the internal pull selected by `pull` (0 none, 1 up,
+ * 2 down), and return the samples (bit 0 = first). A pin a chip is driving
+ * reads the same level with either pull; a pin connected to nothing
+ * follows the pull. That is how the panel readback tells "the panel is not
+ * answering" from "the panel is not wired to this pin" — on this shield it
+ * is the latter. IDR reads the pin whatever MODER says, but the pull has
+ * to be set for the answer to mean anything. */
+uint32_t hal_miso_probe(uint32_t pull)
+{
+    uint32_t samples = 0;
+    uint32_t moder = GPIO_MODER(PORT_A);
+    uint32_t pupdr = GPIO_PUPDR(PORT_A);
+
+    GPIO_MODER(PORT_A) = moder & ~(3u << 12);     /* PA6: input */
+    GPIO_PUPDR(PORT_A) = (pupdr & ~(3u << 12)) | ((pull & 3u) << 12);
+    for (int i = 0; i < 32; i++)
+        if (GPIO_IDR(PORT_A) & (1u << 6)) samples |= 1u << i;
+    GPIO_MODER(PORT_A) = moder;                   /* back to SPI AF */
+    GPIO_PUPDR(PORT_A) = pupdr;
+    return samples;
 }
 
 /* ---------------------------- SPI DMA ----------------------------- */

@@ -59,3 +59,16 @@ void lcd_clear(uint8_t color_index);
 void lcd_text(int16_t x, int16_t y, const char *s, uint8_t fg, uint8_t bg);
 void lcd_show_fps(int fps);
 void lcd_push_full(void);   /* one-off CPU-driven push of the picture */
+
+/* Panel frame-memory readback (diagnostic, see lcd.c): clocks the picture
+ * back out of the panel over MISO (RAMRD, 0x2E) and compares it with the
+ * bytes the send path would produce from the framebuffer. Runs once
+ * shortly after boot and then whenever dbg_lcd_readback_req is written
+ * over SWD; the verdict is dbg_lcd_readback_ok / dbg_lcd_readback_diff.
+ * Not part of the frame path (~50 ms of SPI traffic for a whole frame).
+ *
+ * On this shield the panel's SDO is not connected to PA6/MISO (measured:
+ * see dbg_lcd_readback_probe and dbg_lcd_probe_miso), so the verdict is
+ * always "differs" here; the skip decision is checked from the firmware
+ * side instead (dbg_lcd_invariant_* and dbg_lcd_stress). */
+void lcd_readback_check(void);

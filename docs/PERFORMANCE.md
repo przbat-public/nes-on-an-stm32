@@ -122,12 +122,16 @@ wrong colours on the panel.
 
 ## Bands that did not change are not sent
 
-`push_band()` now keeps a copy of what the panel was last given and skips
-a band whose 2 KB are identical: no conversion, no SPI traffic. On Prince
-of Persia about a fifth to a quarter of the bands are skipped
+`push_band()` keeps a copy of what the panel was last given and skips a
+band whose 1 KB is identical: no conversion, no SPI traffic. On Prince of
+Persia about a fifth to a quarter of the bands are skipped
 (`dbg_bands_sent` / `dbg_bands_skipped` in `.bss`, read over SWD), which
 matters twice — the conversion costs CPU time *and* the transfer costs
 wire time, and the wire is the ceiling the section above describes.
+
+**The first version of that test was wrong** and produced horizontal
+stripes on the panel; it is described, with the fix and the proof, at the
+end of this document ("The stripes").
 
 The frame rate on that cartridge stays in the 19-22 fps range either way,
 so the honest headline is that this change helps static screens and does
@@ -419,3 +423,153 @@ change and lives in `build/ref/`.)
 output piped, quietly does nothing. Use the openocd telnet port instead:
 
     tools/ocd_flash.sh emu.bin        # reset halt, write, verify, reset run
+
+## The stripes: a skip decision that compared against the wrong band
+
+The symptom, on the panel: horizontal stripes in the lower, largely static
+part of a Prince of Persia dungeon, looking like a copy of what was above
+them. The framebuffer was correct, so it was in the display path.
+
+### What the code did
+
+`push_band()` decided with `band_xor`, an OR of `(new scanline ^ shadow)`
+accumulated by the per-line copies, where the shadow `sent` was **one band**
+(1 KB) and was overwritten by every push. The PPU now renders straight
+into the framebuffer, so there is no scanline copy to compare against, and
+what the accumulation actually measured was "is this band the same as the
+band **above** it" (the last one pushed, row-aligned) — not "is this band
+the same as what the panel holds at this position". On a static screen,
+where consecutive bands are identical (exactly the lower half of a dungeon
+screen), that answers "unchanged" for a band the panel does not have: the
+band is skipped, the panel keeps older content, and the stripe is
+permanent. The boot check compared against the same wrong shadow, so it
+agreed and never caught it.
+
+### Why the obvious fix does not fit
+
+Keeping a real shadow of the panel and comparing the 1 KB band against it
+word-wise needs 61,440 more bytes. The part has 96 KB of SRAM1 and 32 KB
+of SRAM2; the framebuffer is 60 KB of SRAM1 and the mappers' 8 KB work RAM
+plus 8 KB CHR RAM are another 16 KB, so a second full frame would need
+146 KB of 128 KB. It does not link, at any `-O` level.
+
+### The fix: one band of shadow, taken at the right moment
+
+The shadow is not needed, because at the moment a band is **started** the
+framebuffer still holds exactly what the panel holds — the previous frame
+ended with the two in step (every band that changed was pushed) and the
+fps overlay writes both together. So `lcd_nes_line_target()` copies that
+one band (1 KB, four contiguous rows) into `held[]` just before the
+renderer overwrites it, and `push_band()` sends the band if and only if it
+differs from `held[]`:
+
+    panel == framebuffer            at the start of a band
+    band changed  <=>  fb_band_now != held
+
+`band_xor` is gone entirely — there is no second mechanism to be
+consistent with. The comparison is `band_differs()`, word-wise, 32 bytes
+per iteration, exact, and any difference at all means "send".
+
+### What it costs
+
+Board, Prince of Persia, 16-bit, same emulated frames as the build before
+(`tools/swd.py track`), 80 MHz:
+
+| | before (ecf705e) | after |
+|---|---|---|
+| `dbg_cyc_copy` (snapshot) | 117,921 (1.47 ms) | 41,280 (0.52 ms) |
+| `dbg_cyc_diff` (the decision) | 39,827 (0.50 ms) | 92,520 (1.16 ms) |
+| both passes | 157,748 (1.97 ms) | **133,800 (1.67 ms)** |
+| `dbg_cyc_frame` at frame 300 | 1,998,247 (24.98 ms, 41 fps) | 1,626,113 (20.33 ms, 47 fps) |
+| `dbg_cyc_frame` at frame 600 | 2,016,527 (25.21 ms, 39 fps) | 1,676,244 (20.95 ms, 48 fps) |
+| `dbg_cyc_frame` at frame 900 | 2,020,071 (25.25 ms, 39 fps) | 1,647,228 (20.59 ms, 48 fps) |
+
+The exact comparison is **1.16 ms a frame** — 120 KB read across the 60
+bands, in a frame where all of them are scanned in full, which is the
+static case that matters — and 0.52 ms for the snapshot, so the whole
+change-detection pass is 1.67 ms against the 1.97 ms of the heuristic it
+replaces. The frame is ~4.4 ms **faster** than before for a second reason:
+the old rule sent 49 of 60 bands a frame in scenes where nothing changed
+(its neighbour comparison says "different" whenever the picture varies
+vertically), and the exact rule sends none of them. In the 5 s budget
+sample with 51 bands a frame actually changing, `dbg_cyc_diff` reads
+1.60 ms and the frame is 33.3 ms.
+
+### The proof, part 1: the panel cannot be read back on this shield
+
+The ST7789 has a memory-read command (0x2E, RAMRD) that clocks frame
+memory back out of SDO, and the shield is supposed to wire SDO to
+PA6/MISO. The firmware implements it (`lcd_readback_check()`: set window,
+0x2E, one dummy byte, then compare the converted framebuffer band against
+the bytes the panel returns; counters `dbg_lcd_readback_*`). It does not
+work here, and the measurement is in the counters:
+
+* `dbg_lcd_readback_probe` = **0** — a four-pixel pattern written into the
+  left black bar and clocked back at 40, 10, 2.5 and 0.31 MHz, at both
+  possible byte alignments, never matches. What comes back is a 3-byte
+  periodic pattern that changes between two reads of *identical* content.
+* `dbg_lcd_probe_miso` = 0, and `hal_miso_probe()` samples PA6 as a GPIO
+  input: with the STM32's internal **pull-up** the line reads high in
+  26–28 of 32 samples, with the internal **pull-down** it reads low (6 of
+  32). The line follows the pull, so nothing is driving it — the shield
+  does not connect the panel's SDO to MISO.
+
+So the readback verdict here is always "differs" (`dbg_lcd_readback_diff`
+≈ 90,000 of 122,880 bytes of line noise, `dbg_lcd_readback_ok` = 0), and
+that is what it should say. The path stays compiled in — it is the right
+check on a board where SDO *is* wired — and its cost is why it only runs
+once after boot (`LCD_READBACK_FRAME`) or when `dbg_lcd_readback_req` is
+written over SWD (a whole frame is ~50 ms of SPI traffic in each
+direction).
+
+### The proof, part 2: an invariant and a stress test, on the hardware
+
+Since the panel cannot be asked, the firmware checks its own decisions.
+Two instruments, both in `lcd.c`:
+
+* **The referee** (`dbg_lcd_invariant_*`) keeps a 32-bit fingerprint per
+  band of the content last handed to the panel, and requires **every
+  band that is skipped** to still match it. A wrong reference — the bug
+  above — makes a changed band look unchanged and lands here with
+  probability 1 − 2⁻³² per band. It costs ~1.5 ms a frame, so it runs
+  through the boot window, whenever `dbg_lcd_stress` is running, and
+  whenever `dbg_lcd_check_req` is left set over SWD.
+* **The stress test** (`dbg_lcd_stress`, a frame budget written over SWD)
+  paints a known 48×4 block into one band of the lower half of the
+  picture *and pushes it to the panel*, so the panel really holds the
+  artificial content, and the next frame the emulator draws its own
+  picture over that band — which must then be sent back.
+  `dbg_lcd_stress_missed` counts injected bands that were not (a band that
+  changed and was skipped); injections that happen to paint the colour
+  already there are not counted, since they change nothing.
+
+Same detector, two builds, Prince of Persia, on the board:
+
+| check | old decision (band vs band above) | this build |
+|---|---|---|
+| `dbg_lcd_band_ok` after boot | 0 (the byte-wise check disagreed) | **1** (480 bands) |
+| `dbg_lcd_invariant_ok` / `_bad` | 0 / 55,524 of 57,943 | **1 / 0 of 135,897** |
+| `dbg_lcd_stress_missed` of injections | 1,033 of 1,200 | **0 of 900** (and 0 of 2,500 in a longer run) |
+
+That is the bug reproduced and the fix confirmed without a human looking at
+the panel: with the old decision 86–96% of the bands that provably changed
+were not sent, which is what the stripes were.
+
+### The guard rails that were run for this change
+
+| check | result |
+|---|---|
+| `make host-test` | 19 checks, 0 failed |
+| `make host-ppu-test` | 262,144 checks, 0 failed |
+| `make` and `make LCD_12BIT=1` (arm-none-eabi-gcc, `-Wall -Wextra`) | 0 warnings, 0 errors |
+| `make host-rom ROM=build/test.nes FRAMES=60` | 0 differing bytes (sha256 eef92aeb…) |
+| `make host-rom ROM=build/mmc1.nes FRAMES=60` | 0 differing bytes (sha256 18c1ae2f…) |
+| `make host-rom ROM=build/mmc3.nes FRAMES=90` | 0 differing bytes (sha256 fc71b2f6…) |
+| MMC3 self-test `$030F`, host and board | 3F / 3F, PASS |
+| board: `dbg_lcd_conv_ok`, `dbg_lcd_band_ok`, `dbg_lcd_invariant_ok` | 1, 1, 1 (`_bad` = 0) |
+| board: `dbg_lcd_readback_ok` | 0 — SDO is not wired, see above |
+
+(The three reference frames were captured from a pristine `git archive
+HEAD` checkout before any change, and the three cartridges are regenerated
+byte-identically by `tools/make_test_rom.py`; the on-disk `build/ref/` was
+gone, so the references live in `/tmp/ref-*.raw` for this session.)

@@ -25,6 +25,11 @@ bool gpio_read(uint8_t port, uint8_t pin);
 
 /* CPU-polled SPI (used for the small command/data transfers) */
 void spi_write(const uint8_t *buf, uint32_t n);
+/* CPU-polled SPI read (panel RAMRD readback): clocks 0xFF out, captures MISO */
+void spi_read(uint8_t *buf, uint32_t n);
+void spi_rx_flush(void);
+void spi_set_baud(uint32_t br);  /* CR1 BR field: 0 = 40 MHz, 2 = 10 MHz */
+uint32_t hal_miso_probe(uint32_t pull);  /* sample PA6 as a GPIO input (0/1/2 = none/up/down) */
 
 /* SPI via DMA (used for the picture bands) */
 void spi_dma_init(void);

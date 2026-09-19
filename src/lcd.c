@@ -134,23 +134,198 @@ static uint32_t stage[2][(BAND_BYTES + 8) / 4];
 static int      stage_cur;        /* buffer the next band is built in */
 static int      dma_inflight;
 
-/* What the panel already holds, band for band. A band that did not change
- * is neither converted nor sent, which saves both the CPU work and the
- * SPI traffic; the buffer starts as 0xFF, which is not a valid NES colour,
- * so the first frame sends everything. */
-static uint8_t sent[NES_W * BAND_H] __attribute__((aligned(4)));
-/* OR of (new scanline ^ sent) over the band being filled: zero means the
- * panel already has this band and it need not be converted or sent */
-static uint32_t band_xor = 1;
+/* ------------------------------------- what the panel holds, band by band */
+/*
+ * A band is sent if and only if it differs from what the panel was last
+ * given. That decision has to be exact — a band wrongly skipped is a stale
+ * or duplicated stripe on the panel, and nothing in the framebuffer shows
+ * it.
+ *
+ * The obvious way to do it is to keep a copy of what the panel holds (a
+ * 61,440-byte shadow) and compare the 1 KB band against it word-wise. That
+ * does not fit on this chip: the framebuffer is 60 KB of SRAM1's 96 KB, the
+ * mappers' 8 KB work RAM and 8 KB CHR RAM are another 16 KB, and the
+ * staging buffers and tables take the rest — a second full frame would
+ * need 146 KB of a 128 KB part (SRAM1+SRAM2), so it cannot be linked at
+ * any -O level.
+ *
+ * The shadow is not needed, because at the moment a band is *started* the
+ * framebuffer still holds exactly what the panel holds: the previous frame
+ * ended with the two in step (every band that changed was pushed), and the
+ * only thing that happens between frames — the fps overlay — writes the
+ * framebuffer and the panel together. So one band's worth of copy, taken
+ * just before the renderer overwrites it, is enough:
+ *
+ *     panel == framebuffer          at the start of a band
+ *     band changed  <=>  framebuffer_band_now != the copy
+ *
+ * which is the same test as "differs from what the panel holds", with 1 KB
+ * of RAM instead of 60 KB. The copy costs a 1 KB memcpy per band (the
+ * comparison costs another 1 KB read per band); both are timed into
+ * dbg_cyc_copy / dbg_cyc_diff and measured on the board.
+ *
+ * Nothing may write into a band of the framebuffer between its snapshot
+ * and its push except the renderer drawing that band: that would make the
+ * snapshot disagree with the panel. In this firmware nothing does (the
+ * overlay paths write and push together, between frames).
+ */
+static uint8_t held[NES_W * BAND_H] __attribute__((aligned(4)));
 
-/* The change check moved from a byte-wise scan of the band to a word-wise
- * OR accumulated while the scanlines are copied, so the firmware proves at
- * every boot that the two agree: for the first few frames it redoes the
- * slow byte-wise comparison and checks that it says "unchanged" exactly
- * when band_xor does, and that a band it just sent really did land in the
- * shadow. dbg_lcd_band_ok reads 1 over SWD when that held. */
+/* The first frame must send everything: the panel was filled black at boot
+ * and there is no history to compare against. Also set by dbg_lcd_resync,
+ * which re-sends the whole picture once (recovery, and a way to check that
+ * a suspect panel is being refreshed at all). */
+static int force_send = 1;
+volatile uint32_t dbg_lcd_resync;
+volatile uint32_t dbg_lcd_forced;      /* frames that were force-sent */
+
+/* ------------------------------- the referee (a checksum-based inspector) */
+/*
+ * The decision above trusts one thing it cannot see: that the copy really
+ * is what the panel holds. This referee is the independent check the
+ * hardware allows (the panel's own memory cannot be read back — see the
+ * readback section below).
+ *
+ * It keeps one 32-bit fingerprint per band of the content last handed to
+ * the panel, and every time a band is *skipped* it requires the current
+ * band's fingerprint to equal the stored one. A wrong reference (comparing
+ * against another band, or a shadow that was never updated — the bug this
+ * code had) makes a changed band look unchanged and is caught here with
+ * probability 1 - 2^-32 per band. It is a referee, not the decision: the
+ * decision stays the exact byte comparison.
+ *
+ * dbg_lcd_invariant_checks counts the skips it has judged,
+ * dbg_lcd_invariant_bad the ones that failed, and dbg_lcd_invariant_ok is
+ * 1 only while nothing has failed. It costs a fingerprint of every band
+ * (~1.5 ms a frame, visible in dbg_cyc_diff), so it runs only through the
+ * boot window, while dbg_lcd_stress is running and while dbg_lcd_check_req
+ * is left set over SWD — which is also how its cost was measured.
+ */
+static uint32_t sent_fp[LCD_H / BAND_H];
+static int      referee;                   /* on: boot window, on demand, stress */
+volatile uint32_t dbg_lcd_check_req;       /* SWD: 1 keeps the referee running */
+volatile uint32_t dbg_lcd_invariant_ok = 1;
+volatile uint32_t dbg_lcd_invariant_checks;
+volatile uint32_t dbg_lcd_invariant_bad;
+
+/* The boot window: for the first few frames every band is also checked the
+ * slow, byte-wise way (a full read of both buffers), so the word-wise loop
+ * that makes the decision is shown to agree with an obvious one. */
 static int check_bands = 8 * (LCD_H / BAND_H);
 volatile uint32_t dbg_lcd_band_ok = 1, dbg_lcd_band_checked;
+
+static uint32_t band_fp(const uint8_t *p)
+{
+    const u32a *w = (const u32a *)(const void *)p;
+    uint32_t x = 0, s = 0;
+    for (int i = 0; i < (NES_W * BAND_H) / 4; i++) {
+        uint32_t v = w[i];
+        x ^= v;
+        s += v;
+    }
+    return x ^ (s * 2654435761u);
+}
+
+/* Do the two bands differ? Both are 1 KB, contiguous and 4-byte aligned;
+ * 60 bands a frame means 120 KB read, so the loop moves 32 bytes (eight
+ * words) per iteration instead of branching once per word. What it costs
+ * on the board is dbg_cyc_diff: 1.16 ms a frame against the 1.47 ms the
+ * per-line heuristic it replaced cost (see docs/PERFORMANCE.md). */
+static int band_differs(const uint8_t *a8, const uint8_t *b8)
+{
+    const u32a *a = (const u32a *)(const void *)a8;
+    const u32a *b = (const u32a *)(const void *)b8;
+    uint32_t d = 0;
+
+    for (int i = 0; i < (NES_W * BAND_H) / 32; i++) {
+        uint32_t x[8], y[8];
+        memcpy(x, a + 8 * i, sizeof(x));
+        memcpy(y, b + 8 * i, sizeof(y));
+        d |= (x[0] ^ y[0]) | (x[1] ^ y[1]) | (x[2] ^ y[2]) | (x[3] ^ y[3])
+           | (x[4] ^ y[4]) | (x[5] ^ y[5]) | (x[6] ^ y[6]) | (x[7] ^ y[7]);
+    }
+    return d != 0;
+}
+
+/* What the panel holds for band `b` is now the framebuffer's content: used
+ * when something writes both at once (push_rect, the whole-picture push). */
+static void referee_note_band(int b)
+{
+    if (referee)
+        sent_fp[b] = band_fp(fb + (uint32_t)b * BAND_H * FB_W);
+}
+
+static void referee_seed(void)
+{
+    for (int b = 0; b < LCD_H / BAND_H; b++)
+        sent_fp[b] = band_fp(fb + (uint32_t)b * BAND_H * FB_W);
+}
+
+/* ------------------------------- the stress test (a hardware-only proof) */
+/*
+ * The referee judges the decisions the firmware makes; this makes it make
+ * the decisions the reported stripes came from, on demand (dbg_lcd_stress
+ * is a frame budget written over SWD).
+ *
+ * Every frame it paints a known block into one band of the lower half of
+ * the picture *and pushes it to the panel*, so the panel really holds the
+ * artificial content — and the next frame the emulator draws its own
+ * picture over that band, which therefore has to be sent back. Two
+ * counters watch that: dbg_lcd_stress_missed counts an injected band that
+ * was not sent in the next frame (a band that changed and was skipped),
+ * and the referee independently requires every skipped band to still match
+ * what the panel was given (dbg_lcd_invariant_bad).
+ *
+ * It is the failure condition the report describes — a static part of the
+ * screen, a band given one content and then asked to go back to what its
+ * neighbours look like — without needing the game to cooperate.
+ *
+ * The block is 48x4 pixels in one band, so on the panel it reads as a
+ * short flashing bar; that is the diagnostic being visible, and it stops
+ * as soon as the budget runs out.
+ */
+volatile uint32_t dbg_lcd_stress;          /* frames left, written over SWD */
+volatile uint32_t dbg_lcd_stress_frames;   /* injections done so far        */
+volatile uint32_t dbg_lcd_stress_missed;   /* injected band not sent back   */
+static int      stress_watch = -1;         /* the band injected last frame  */
+static int      stress_seen;               /* ... and whether it was sent   */
+
+static void push_rect(int x0, int y0, int w, int h);   /* further down */
+
+static void stress_tick(void)
+{
+    if (stress_watch >= 0 && !stress_seen)
+        dbg_lcd_stress_missed++;
+    stress_watch = -1;
+    stress_seen = 0;
+
+    if (!dbg_lcd_stress)
+        return;
+    dbg_lcd_stress--;
+    dbg_lcd_stress_frames++;
+
+    uint32_t n = dbg_lcd_stress_frames;
+    int b  = 40 + (int)(n % 16);                  /* lower half: 40..55 */
+    int x0 = 16 + (int)((n * 37u) % 200u);
+    int y0 = b * BAND_H;
+    uint8_t c = (uint8_t)((n * 11u) & 0x3F);
+    int painted = 0;
+
+    for (int y = y0; y < y0 + BAND_H; y++) {
+        for (int x = x0; x < x0 + 48; x++) {
+            uint8_t *p = &fb[(uint32_t)y * FB_W + x];
+            if (*p != c) { *p = c; painted++; }
+        }
+    }
+    push_rect(x0, y0, 48, BAND_H);        /* the panel gets it too */
+
+    /* Watch this band only if the paint really changed it: a block that
+     * already held that colour changed nothing, so there is nothing that
+     * has to be sent back and counting it would report a miss that is not
+     * one. (On a dungeon screen with large flat areas that is roughly one
+     * injection in a hundred.) */
+    stress_watch = painted ? b : -1;
+}
 
 /* -------------------------------------------------- pixel conversion */
 
@@ -280,7 +455,11 @@ static void cmd(uint8_t c) { dc(0); cs(0); spi_write(&c, 1); cs(1); }
 
 static void data(const uint8_t *d, uint32_t n) { dc(1); cs(0); spi_write(d, n); cs(1); }
 
-static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
+/* The address window, without starting a write: the picture path adds
+ * 0x2C (RAMWR) and the readback path in this file adds 0x2E (RAMRD),
+ * which needs the window set and the read pointer left at its origin. */
+static void set_window_addr(uint16_t x0, uint16_t y0,
+                            uint16_t x1, uint16_t y1)
 {
     uint8_t b[4];
     cmd(0x2A);
@@ -291,6 +470,11 @@ static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
     b[0] = (uint8_t)(y0 >> 8); b[1] = (uint8_t)y0;
     b[2] = (uint8_t)(y1 >> 8); b[3] = (uint8_t)y1;
     data(b, 4);
+}
+
+static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
+{
+    set_window_addr(x0, y0, x1, y1);
     cmd(0x2C);
 }
 
@@ -319,6 +503,227 @@ static void push_rect(int x0, int y0, int w, int h)
         spi_write(line, (uint32_t)wp * LCD_BPP / 8);
     }
     cs(1);
+
+    /* The panel and the framebuffer have just been given the same pixels
+     * for this rectangle; since the two were in step before, they still
+     * are for the whole bands it touches, so the referee's view of those
+     * bands is simply the framebuffer's. (This is the fps overlay and the
+     * stress test; the picture itself never comes through here.) */
+    for (int b = y0 / BAND_H; b <= (y0 + h - 1) / BAND_H; b++)
+        referee_note_band(b);
+}
+
+/* --------------------------------------------------- panel readback */
+/*
+ * Everything else in this file checks the firmware against itself; this is
+ * the one path that tries to ask the *panel* what it is holding, which is
+ * where the reported stripes would show up: a band the firmware believes
+ * is already on the panel and is not looks perfect in the framebuffer.
+ *
+ * The ST7789 has a memory-read command (0x2E, RAMRD) that clocks frame
+ * memory back out of SDO. Measured on this hardware it does not work: the
+ * X-NUCLEO-GFX01M2 leaves the panel's SDO unconnected, so PA6/MISO floats.
+ * The probe below shows both halves of that — no byte alignment at any of
+ * four SPI clocks ever matches a pattern written on purpose
+ * (dbg_lcd_readback_probe stays 0) — and hal_miso_probe() settles it: with
+ * the STM32's internal pull-up on PA6 the line reads high, with the
+ * pull-down it reads low, so nothing is driving it. A whole-frame
+ * comparison consequently reports tens of thousands of differing bytes
+ * (dbg_lcd_readback_diff, which is read noise, not panel content) and
+ * dbg_lcd_readback_ok stays 0.
+ *
+ * The path is kept compiled in because it is the right check on a board
+ * where SDO *is* wired, and because it is what the measurement above was
+ * made with. What stands in for it here is the referee plus the stress
+ * test further up, which check the skip decision from the firmware side.
+ *
+ * It is a diagnostic, not part of the frame path: a full frame is 122,880
+ * bytes in each direction (~50 ms of wire time), so it runs once shortly
+ * after boot and after that only when dbg_lcd_readback_req is written over
+ * SWD. dbg_lcd_readback_runs counts the runs, so a request that produced
+ * no run means the firmware never got to it.
+ */
+extern volatile uint32_t dbg_frames;         /* main.c */
+
+volatile uint32_t dbg_lcd_readback_req;      /* write 1 over SWD: run it    */
+volatile uint32_t dbg_lcd_readback_ok;       /* 1 = panel == framebuffer    */
+volatile uint32_t dbg_lcd_readback_runs;
+volatile uint32_t dbg_lcd_readback_checks;   /* bytes compared              */
+volatile uint32_t dbg_lcd_readback_diff;     /* bytes that differed         */
+volatile uint32_t dbg_lcd_readback_bands_bad;
+volatile uint32_t dbg_lcd_readback_first_bad;/* band of the first difference */
+volatile uint32_t dbg_lcd_readback_want;     /* first differing byte pair   */
+volatile uint32_t dbg_lcd_readback_got;
+volatile uint32_t dbg_lcd_readback_probe;    /* bitmask: what answered, see
+                                              * the probe below             */
+volatile uint32_t dbg_lcd_readback_dummy;    /* leading dummy byte in use   */
+volatile uint32_t dbg_lcd_readback_speed;    /* SPI clock that worked, kHz  */
+volatile uint32_t dbg_lcd_readback_word;     /* first 4 bytes of a probe    */
+volatile uint32_t dbg_lcd_readback_last;     /* frames when it last ran     */
+volatile uint8_t  dbg_lcd_probe_raw[32];     /* raw bytes clocked out       */
+volatile uint32_t dbg_lcd_probe_miso;        /* PA6 sampled with the panel
+                                              * addressed, 1 bit per sample */
+
+static uint32_t rb_dummy;        /* 1 = the panel sends one dummy byte first */
+static uint32_t rb_baud;         /* CR1 BR value the probe worked at (0=40MHz) */
+static int      rb_probed;       /* the probe (and the autostart) have run   */
+static int      rb_autostart_done;   /* the automatic run happened */
+#define LCD_READBACK_FRAME 30    /* one automatic run this many frames after boot */
+
+/* Read `n` bytes of panel frame memory from the origin of the window.
+ * After 0x2E the panel starts driving SDO; the master has to keep the
+ * clock running, which spi_read() does (it sends 0xFF and captures MISO).
+ * The caller ends the transfer with cs(1). */
+static void panel_read_begin(uint16_t x0, uint16_t y0,
+                             uint16_t x1, uint16_t y1)
+{
+    set_window_addr(x0, y0, x1, y1);
+    cmd(0x2E);                             /* RAMRD */
+    dc(1); cs(0);
+    if (rb_dummy) { uint8_t d; spi_read(&d, 1); }
+}
+
+/* Does the panel answer at all, and with what byte order and clock?
+ *
+ * Writes four known pixels into the left black bar (0..3, 0 — outside the
+ * NES picture, and put back to black right after) and clocks 32 bytes back
+ * at four SPI clocks, looking for the pattern at both possible byte
+ * alignments (the first byte after 0x2E may be a dummy — the ST7789
+ * datasheet says it is). The result is a bitmask in dbg_lcd_readback_probe
+ * (bit 2*clock + alignment), plus the raw bytes of the last attempt in
+ * dbg_lcd_probe_raw for a post mortem over SWD.
+ *
+ * A panel that answers nothing at any clock returns whatever the floating
+ * line happens to pick up, matches no alignment and leaves the mask at 0 —
+ * which is what this shield does (see hal_miso_probe() for the proof that
+ * the line is not driven at all). */
+static uint32_t readback_probe(void)
+{
+    static const uint8_t src[4] = { 0x0F, 0x21, 0x30, 0x16 };
+    static const uint32_t baud[4] = { 0, 2, 4, 7 };  /* 40, 10, 2.5, 0.31 MHz */
+    static const uint32_t khz[4]  = { 40000, 10000, 2500, 312 };
+    uint8_t pat[8], got[32];
+    const uint32_t n = 4u * LCD_BPP / 8u;   /* 4 pixels: 8 bytes 16-bit,
+                                             * 6 bytes 12-bit             */
+    uint32_t mask = 0, first = 0;
+
+    for (int c = 0; c < 4; c++) {
+        spi_set_baud(baud[c]);
+        spi_rx_flush();
+
+        conv_pixels(src, pat, 4);
+        set_window(0, 0, 3, 0);
+        dc(1); cs(0); spi_write(pat, n); cs(1);
+
+        panel_read_begin(0, 0, 3, 0);
+        if (c == 0) dbg_lcd_probe_miso = hal_miso_probe(0);
+        spi_read(got, sizeof(got));
+        cs(1);
+
+        for (uint32_t i = 0; i < sizeof(got); i++)
+            dbg_lcd_probe_raw[i] = got[i];
+        if (c == 0) {
+            dbg_lcd_readback_word = (uint32_t)got[0] | ((uint32_t)got[1] << 8)
+                                  | ((uint32_t)got[2] << 16)
+                                  | ((uint32_t)got[3] << 24);
+        }
+        if (memcmp(got, pat, n) == 0) {
+            mask |= 1u << (2 * c);          /* data starts immediately */
+            if (!first) { first = 1; dbg_lcd_readback_speed = khz[c]; }
+        }
+        if (memcmp(got + 1, pat, n) == 0) {
+            mask |= 1u << (2 * c + 1);      /* one dummy byte first    */
+            if (!first) { first = 2; dbg_lcd_readback_speed = khz[c]; }
+        }
+    }
+
+    /* the working combination, if any: prefer the fastest clock, and the
+     * dummy byte only if the direct alignment never matched */
+    if (mask & 1u)      { rb_baud = 0; rb_dummy = 0; }
+    else if (mask & 2u) { rb_baud = 0; rb_dummy = 1; }
+    else if (mask & 4u) { rb_baud = 2; rb_dummy = 0; }
+    else if (mask & 8u) { rb_baud = 2; rb_dummy = 1; }
+    else {
+        rb_baud = 2;                        /* slowest sensible clock for
+                                             * the full check if nothing
+                                             * answered */
+        rb_dummy = 0;
+    }
+
+    memset(pat, 0, n);                      /* put the bar back to black */
+    spi_set_baud(0);
+    set_window(0, 0, 3, 0);
+    dc(1); cs(0); spi_write(pat, n); cs(1);
+    return mask;
+}
+
+/* The panel's SDO does not have to keep up with the 40 MHz the picture is
+ * clocked out at, so the probe tries the fast clock and then a quarter of
+ * it, and the full check uses whatever worked. */
+static void readback_probe_all(void)
+{
+    uint32_t mask = readback_probe();
+    dbg_lcd_readback_probe = mask;
+    dbg_lcd_readback_dummy = rb_dummy;
+    dbg_lcd_readback_speed = (mask == 0) ? 0 : dbg_lcd_readback_speed;
+    rb_probed = 1;
+}
+
+/* The whole picture: convert every band with the same conv_pixels() the
+ * send path uses, read the same rectangle back out of the panel and
+ * compare. Byte-wise, because the point is to say exactly how many bytes
+ * differ and where the first one is. */
+void lcd_readback_check(void)
+{
+    static uint8_t want[BAND_BYTES + 8];
+    static uint8_t got[256];               /* the band is read in chunks */
+    uint32_t diff = 0, checks = 0, bands_bad = 0, first_bad = 0xFFFFFFFFu;
+    uint32_t want_byte = 0, got_byte = 0;
+
+    if (!rb_probed) readback_probe_all();
+    spi_set_baud(rb_baud);
+    spi_rx_flush();
+
+    for (int b = 0; b < LCD_H / BAND_H; b++) {
+        int y0 = b * BAND_H;
+        uint32_t d = 0;
+        conv_pixels(fb + (uint32_t)y0 * FB_W, want, NES_W * BAND_H);
+        panel_read_begin(NES_X, (uint16_t)y0,
+                         (uint16_t)(NES_X + NES_W - 1),
+                         (uint16_t)(y0 + BAND_H - 1));
+        for (uint32_t off = 0; off < BAND_BYTES; off += sizeof(got)) {
+            uint32_t n = BAND_BYTES - off;
+            if (n > sizeof(got)) n = sizeof(got);
+            spi_read(got, n);
+            for (uint32_t i = 0; i < n; i++) {
+                checks++;
+                if (want[off + i] != got[i]) {
+                    if (diff == 0) {
+                        want_byte = want[off + i];
+                        got_byte = got[i];
+                    }
+                    diff++;
+                    d++;
+                }
+            }
+        }
+        cs(1);
+        if (d) {
+            bands_bad++;
+            if (first_bad == 0xFFFFFFFFu) first_bad = (uint32_t)b;
+        }
+    }
+
+    spi_set_baud(0);                        /* back to the picture clock */
+    dbg_lcd_readback_checks = checks;
+    dbg_lcd_readback_diff = diff;
+    dbg_lcd_readback_bands_bad = bands_bad;
+    dbg_lcd_readback_first_bad = first_bad;
+    dbg_lcd_readback_want = want_byte;
+    dbg_lcd_readback_got = got_byte;
+    dbg_lcd_readback_last = dbg_frames;
+    dbg_lcd_readback_runs++;
+    dbg_lcd_readback_ok = (diff == 0);
 }
 
 void lcd_init(void)
@@ -357,8 +762,7 @@ void lcd_init(void)
     check_bands = 8 * (LCD_H / BAND_H);
     dbg_lcd_band_ok = 1;
     dbg_lcd_band_checked = 0;
-    memset(sent, 0xFF, sizeof(sent));     /* 0xFF is not a NES colour: the
-                                           * first frame sends everything */
+    force_send = 1;                       /* no history: send it all */
 
     gpio_clear(PORT_A, PIN_RST); delay_ms(20);
     gpio_set(PORT_A, PIN_RST);   delay_ms(120);
@@ -392,6 +796,12 @@ void lcd_init(void)
         }
     }
     cs(1);
+
+    /* Ask the panel whether it can talk back at all (and which byte order
+     * its RAMRD uses). Cheap — 20 bytes — and it makes the readback state
+     * visible over SWD right from boot instead of only when a whole-frame
+     * check is requested. */
+    readback_probe_all();
 }
 
 /* --------------------------------------------------------- rendering */
@@ -453,6 +863,17 @@ static uint32_t acc_setwin, acc_copy, acc_frameend, acc_sent, acc_skipped;
 
 void lcd_dbg_frame(void)
 {
+    /* The referee costs a fingerprint of every band (dbg_cyc_diff shows it,
+     * ~1.6 ms a frame), so it runs when it is needed and not otherwise:
+     * through the boot window, whenever dbg_lcd_stress is running, and
+     * whenever dbg_lcd_check_req is left set over SWD. When it comes on its
+     * fingerprints have to be re-seeded from the framebuffer, which at a
+     * frame boundary is what the panel holds. */
+    int want = (check_bands > 0) || (dbg_lcd_check_req != 0)
+               || (dbg_lcd_stress != 0);
+    if (want && !referee) referee_seed();
+    referee = want;
+
     dbg_cyc_flush    = acc_flush;    acc_flush    = 0;
     dbg_cyc_band     = acc_band;     acc_band     = 0;
     dbg_cyc_wait     = acc_wait;     acc_wait     = 0;
@@ -468,32 +889,52 @@ void lcd_dbg_frame(void)
 static void push_band(int y0)
 {
     const uint8_t *src = fb + (uint32_t)y0 * FB_W;
+    const int band = y0 / BAND_H;
 
     uint32_t t = CYC_NOW();
-    bool checking = check_bands > 0;
-    if (checking) check_bands--;
-    uint32_t slow_diff = 0;
-    if (checking) {
+
+    /* The decision: the 1 KB band against the 1 KB the panel holds, word
+     * by word. */
+    int differs = band_differs(src, held);
+    int changed = differs || force_send;   /* no history: send it all */
+
+    /* the referee: fingerprint the band we are about to judge */
+    uint32_t fp = 0;
+    if (referee)
+        fp = band_fp(src);
+
+    if (check_bands > 0) {
+        /* Boot window: the same question the obvious way, over every byte,
+         * and against the unforced answer (a forced frame says "changed"
+         * whatever the bytes are). */
+        uint32_t slow = 0;
         for (int i = 0; i < NES_W * BAND_H; i++)
-            slow_diff |= (uint32_t)(src[i] ^ sent[i]);
+            slow |= (uint32_t)(src[i] ^ held[i]);
+        check_bands--;
         dbg_lcd_band_checked++;
-        if ((slow_diff == 0) != (band_xor == 0)) dbg_lcd_band_ok = 0;
+        if ((slow == 0) == differs) dbg_lcd_band_ok = 0;
     }
-    /* band_xor was accumulated by the scanline copies that make up this
-     * band, so "did anything change" costs nothing extra here */
-    if (band_xor == 0) {
+
+    if (!changed) {
         acc_skipped++;
+        if (referee) {
+            dbg_lcd_invariant_checks++;
+            if (sent_fp[band] != fp) {
+                dbg_lcd_invariant_bad++;
+                dbg_lcd_invariant_ok = 0;
+            }
+        }
         acc_diff += CYC_NOW() - t;
         return;                       /* the panel is already showing this */
     }
-    band_xor = 0;
-    memcpy(sent, src, sizeof(sent));
-    if (checking) {
-        uint32_t d = 0;
-        for (int i = 0; i < NES_W * BAND_H; i++)
-            d |= (uint32_t)(src[i] ^ sent[i]);
-        if (d != 0) dbg_lcd_band_ok = 0;      /* the shadow must match now */
-    }
+
+    /* the panel is about to hold exactly these bytes */
+    memcpy(held, src, sizeof(held));
+    if (referee)
+        sent_fp[band] = fp;
+    if (band == stress_watch)
+        stress_seen = 1;              /* the injected band came back */
+
     acc_sent++;
     acc_diff += CYC_NOW() - t;
 
@@ -536,39 +977,40 @@ static void push_band(int y0)
 /* The PPU renders its scanlines straight into these rows (nes.c asks for
  * the row before rendering), so the picture is written once instead of
  * into a line buffer here and then copied: that copy was 61,440 bytes, or
- * about 2 ms, of every frame. */
+ * about 2 ms, of every frame.
+ *
+ * This is also where a band is snapshotted (see held[]): the row handed
+ * out still holds what the panel holds, and the renderer is about to
+ * overwrite it. */
 uint8_t *lcd_nes_line_target(int y)
 {
-    return fb + (uint32_t)y * FB_W;
+    uint8_t *row = fb + (uint32_t)y * FB_W;
+    if ((y & (BAND_H - 1)) == 0 && !force_send) {
+        uint32_t t = CYC_NOW();
+        memcpy(held, row, sizeof(held));   /* 4 rows, one contiguous run */
+        acc_copy += CYC_NOW() - t;
+    }
+    return row;
 }
 
 void lcd_nes_line(int y, const uint8_t *line)
 {
     uint32_t t0 = CYC_NOW();
-    const uint8_t *dst = fb + (uint32_t)y * FB_W;
-    /* the shadow of this band's scanline, what the panel currently holds */
-    const uint8_t *sh = sent + (uint32_t)(y & (BAND_H - 1)) * NES_W;
+    uint8_t *dst = fb + (uint32_t)y * FB_W;
     dbg_lines = (uint32_t)y;
 
     /* a caller that did not render into the framebuffer row still gets the
-     * picture (the host tools do, and nes_line_target may be unset) */
-    if (line != dst)
-        memcpy((uint8_t *)dst, line, NES_W);
-
-    /* one pass over the two rows: does this scanline differ from what the
-     * panel was last given? (the byte-wise check that used to run over the
-     * whole band at push time is folded in here) */
-    for (int x = 0; x < NES_W; x += 8) {
-        u32a a0, a1, b0, b1;
-        memcpy(&a0, dst + x, 4);
-        memcpy(&a1, dst + x + 4, 4);
-        memcpy(&b0, sh + x, 4);
-        memcpy(&b1, sh + x + 4, 4);
-        band_xor |= (a0 ^ b0) | (a1 ^ b1);
+     * picture (the host tools do, and nes_line_target may be unset); the
+     * band snapshot then has to happen here, while the row in the
+     * framebuffer is still the one the panel was given */
+    if (line != dst) {
+        if ((y & (BAND_H - 1)) == 0 && !force_send) {
+            uint32_t t = CYC_NOW();
+            memcpy(held, dst, sizeof(held));
+            acc_copy += CYC_NOW() - t;
+        }
+        memcpy(dst, line, NES_W);
     }
-
-    uint32_t t1 = CYC_NOW();
-    acc_copy += t1 - t0;
 
     if ((y & (BAND_H - 1)) == BAND_H - 1)
         push_band(y - (BAND_H - 1));
@@ -585,4 +1027,24 @@ void lcd_nes_frame_end(void)
     }
     cs(1);
     acc_frameend += CYC_NOW() - t;
+
+    /* the first frame has sent everything: from now on a band is only sent
+     * when it really changed. dbg_lcd_resync asks for one more full frame
+     * (recovery, and proof that the panel is being refreshed at all). */
+    if (force_send) { force_send = 0; dbg_lcd_forced++; }
+    if (dbg_lcd_resync) { dbg_lcd_resync = 0; force_send = 1; }
+
+    stress_tick();
+
+    /* the panel readback: on request (dbg_lcd_readback_req over SWD), plus
+     * one automatic run a moment after boot so that a fresh board reports
+     * a result with nobody asking. Nothing is in flight here — the last
+     * band has been drained above — so the SPI bus is free for it. */
+    if (dbg_lcd_readback_req) {
+        dbg_lcd_readback_req = 0;
+        lcd_readback_check();
+    } else if (!rb_autostart_done && dbg_frames >= LCD_READBACK_FRAME) {
+        rb_autostart_done = 1;
+        lcd_readback_check();
+    }
 }
