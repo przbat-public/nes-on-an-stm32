@@ -156,3 +156,34 @@ tools/ocd_flash.sh emu.bin          # reset halt, write, verify, reset run
 There is no ROM loader yet — cartridges are baked into the firmware at
 build time. A serial (XMODEM over the ST-LINK virtual COM port) loader is
 the obvious next step.
+
+## The tools, and which of them need the board
+
+Host only, they run wherever the sources build:
+
+| Tool | What it does |
+|---|---|
+| `tools/host_test.c` (`make host-test`) | 19 checks on the 6502 core |
+| `tools/host_render.c` (`make host-rom`) | renders a cartridge's frames on the PC |
+| `tools/ppu_expand_test.c` (`make host-ppu-test`) | 262,144 checks on the background expansion tables |
+| `tools/ppu_nt_test.c` (`make host-nt-test`) | 1,966,080 checks on the nametable walk |
+| `tools/diff_run.sh` | random instruction streams through two cores, state compared instruction by instruction |
+| `tools/mmc3_result.c` | runs the MMC3 self-test cartridge and prints its result byte |
+| `tools/make_test_rom.py` (`--mmc1`, `--mmc3`) | builds the self-test cartridges |
+| `tools/gen_6502.py` | generates `src/cpu_ops.h`; that file is never edited by hand |
+| `tools/asm6502.py`, `tools/cpu_test.py` | the small assembler and the test program behind `host-test` |
+| `tools/rom2c.py` | turns a `.nes` file into the C array the firmware embeds |
+| `tools/raw2png.py` | turns a frame dump into a PNG using the NES palette |
+
+Needs the board and a debugger attached:
+
+| Tool | What it does |
+|---|---|
+| `tools/swd.py` | reads the `.bss` counters over SWD: `read`, `budget SECS`, `track FRAMES...`, `stats`, `watch` |
+| `tools/board_run.py` | drives the board with a pad script, so board frame N can be compared with host frame N |
+| `tools/ocd_flash.sh` | flashes through openocd; `st-flash` silently does nothing while openocd holds the ST-Link |
+
+Two habits these tools exist for. Nothing about the hardware counts as verified until the
+board's framebuffer has been compared with the host's frame for the same emulated frame.
+Nothing about the emulation counts as verified until the self-test cartridges render
+byte-identically before and after the change.
