@@ -690,3 +690,62 @@ pixels — so the middle byte, which holds two different pixels' nibbles, is
 exercised — plus all 64 palette entries against an independently written
 rounding expression. Both ARM builds (`make` and `make LCD_12BIT=1`) are
 warning-free.
+
+## The MMC5 fast path that was never taken (27.78 → 17.10 ms of PPU)
+
+MMC5 is the one mapper whose nametables the PPU cannot walk on its own: the
+cartridge picks a source per 1 KB page from $5105 (CIRAM page 0, CIRAM page
+1, the on-chip ExRAM, or a synthesised fill page). The renderer keeps its
+own walk for the four mappings that *are* expressible as mirroring —
+one-screen lower/upper, horizontal, vertical — and `mapper.c` hands the
+frame back to it by leaving `ppu_bg_hook` clear.
+
+Except it never did. `mmc5_apply_nt()` set `ppu_mirroring` for those four
+values but left the hook installed, and `ppu_render_scanline()` tests the
+hook first, so every background tile of every MMC5 frame took the
+per-tile mapper path. Measured on the board, Castlevania III's title
+screen, 5 s windows, 80 MHz, 16-bit:
+
+| | before | after |
+|---|---|---|
+| background tiles through the hook | 7,909 of 7,920 a frame | **424** |
+| `dbg_cyc_ppu` | 2,222,392 (**27.78 ms**) | 1,367,731 (**17.10 ms**) |
+| — background pass (`dbg_cyc_bg`) | 1,692,967 (21.16 ms) | 837,157 (10.46 ms) |
+| `dbg_cyc_frame` | 3,872,000 (48.4 ms, 20.9 fps) | 2,778,736 (34.7 ms, 26.9 fps) |
+
+The two columns are the same scene: same cartridge, same attract-mode
+frame, same 46 of 60 bands sent a frame, two builds that differ in one
+`ppu_bg_hook = 0`.
+
+**The fast path had two bugs of its own**, both invisible to the frame
+comparisons and both found by asking what it is *supposed* to compute:
+
+1. the walk toggled CIRAM bit 10 on the coarse-X wrap in every mirroring
+   mode. That bit is the horizontal nametable bit, which is a *page* bit
+   only under vertical mirroring (`nt_index` returns `a & 0x7FF`); under
+   horizontal mirroring the page comes from the vertical bit and under
+   one-screen mirroring there is no page bit at all. The visible damage is
+   one wrong tile column at the right edge — off screen whenever fine X is
+   0, which is what every test cartridge uses;
+2. the mapper's attribute address used `(offset >> 4) & 0x18` for the row
+   term, where the term is `(coarse Y >> 2) << 3` = `(offset >> 4) & 0x38`.
+   Dropping bit 5 costs nothing above coarse Y 15 and gives the bottom half
+   of every nametable the palette of the row 16 tiles up.
+
+`make host-nt-test` (`tools/ppu_nt_test.c`) is the check that would have
+caught both: for all four mappings × both nametable bits × both pattern
+tables × 32 coarse-X × 30 coarse-Y × 8 fine-X × 8 fine-Y it renders the
+same scanline twice — once through a reference "mapper" that answers each
+tile from a page table laid out exactly like $5105 at the address the
+documented `v` increment produces, and once through the PPU's own walk —
+and requires the two 256-pixel lines to be identical. 1,966,080 checks, 0
+failed, 0 column addresses wrong. With the wrap bug back in it fails
+1,463,952 of them; with the plain `+1` address walk back in, 32,440,320
+column addresses are wrong.
+
+The same equivalence is checked end to end on a real cartridge:
+`tools/host_render`-style runs can force `ppu_bg_hook` back on for every
+tile, and frames 200/400/600 of Castlevania III come out byte-identical
+with the hook forced and with the fast path — which is exactly the
+differential that catches the attribute mask (the old build, which always
+used the hook, rendered frames 200 and 400 differently).

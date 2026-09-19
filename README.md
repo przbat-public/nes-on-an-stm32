@@ -185,6 +185,7 @@ framebuffer is identical to the reference build).
 | The Lion King 3 — Timon & Pumbaa | MMC3 | plays; 0 differing bytes; splits its status bar with the MMC3 IRQ, which fires on the scanline the game asks for |
 | Mario 16 | MMC3 | plays; 0 differing bytes on the title screen |
 | Prince of Persia (PL) | UxROM | plays; 0 differing bytes on the title screen; 8 KB CHR **RAM** |
+| Castlevania III — Dracula's Curse | MMC5 | plays, from the title screen through the intro into the level; drives PRG mode 2, 1 KB CHR banks, $5105 = $44/$50/$55/$E4 (so ExRAM and fill as nametable sources), ExRAM mode 0, direct ExRAM writes and the scanline IRQ at $5203 = 8; 0 differing bytes at emulated frames 300/400/500/620 |
 
 The three self-test cartridges in `tools/` cover the same ground without
 any third-party code: NROM (`make rom`), MMC1

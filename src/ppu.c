@@ -29,11 +29,19 @@
 volatile uint32_t dbg_cyc_fill, dbg_cyc_bg, dbg_cyc_spr;
 static uint32_t acc_fill, acc_bg, acc_spr;
 
+/* how many background tiles in the last frame expanded to nothing (both
+ * pattern bytes zero): the quickest way to tell "the nametable is empty"
+ * from "the CHR bank is wrong" when a cartridge draws a blank screen */
+volatile uint32_t dbg_bg_tiles, dbg_bg_zero;
+static uint32_t acc_tiles, acc_zero;
+
 void ppu_dbg_frame(void)
 {
     dbg_cyc_fill = acc_fill; acc_fill = 0;
     dbg_cyc_bg   = acc_bg;   acc_bg   = 0;
     dbg_cyc_spr  = acc_spr;  acc_spr  = 0;
+    dbg_bg_tiles = acc_tiles; acc_tiles = 0;
+    dbg_bg_zero  = acc_zero;  acc_zero  = 0;
 }
 
 uint8_t  ppu_line[PPU_W] __attribute__((aligned(4)));
@@ -42,6 +50,14 @@ uint32_t ppu_frames;
 uint8_t (*ppu_chr_read)(uint16_t addr);
 void    (*ppu_chr_write)(uint16_t addr, uint8_t v);
 int      ppu_mirroring;
+
+/* installed by the MMC5 (see ppu.h); NULL for every other mapper, which
+ * keeps the PPU's own nametable path as the fast one */
+uint8_t (*ppu_bg_hook)(const ppu_bg_fetch_t *f, uint8_t *tile, uint16_t *paddr);
+void    (*ppu_chr_bg_hook)(void);
+void    (*ppu_chr_spr_hook)(void);
+uint8_t (*ppu_nt_read_hook)(uint16_t addr);
+void    (*ppu_nt_write_hook)(uint16_t addr, uint8_t v);
 
 /* ------------------------------- state ---------------------------- */
 
@@ -147,6 +163,7 @@ static uint8_t  line_fx;          /* fine X                             */
 static bool     nmi_pending;
 static bool     nmi_occurred;     /* for the $2002 read behaviour   */
 static uint8_t  suppress_vblank;
+static int      cur_line;         /* the line being emulated now    */
 
 /* ---------------------------- nametables -------------------------- */
 
@@ -167,7 +184,10 @@ uint8_t ppu_read_vram(uint16_t addr)
 {
     addr &= 0x3FFF;
     if (addr < 0x2000) return ppu_chr_read(addr);
-    if (addr < 0x3F00) return vram[nt_index(addr)];
+    if (addr < 0x3F00) {
+        if (ppu_nt_read_hook) return ppu_nt_read_hook(addr);
+        return vram[nt_index(addr)];
+    }
     /* palette: $3F10/$14/$18/$1C mirror $3F00/$04/$08/$0C */
     uint8_t p = (uint8_t)(addr & 0x1F);
     if ((p & 0x13) == 0x10) p &= 0x0F;
@@ -180,7 +200,8 @@ void ppu_write_vram(uint16_t addr, uint8_t val)
     if (addr < 0x2000) {
         ppu_chr_write(addr, val);
     } else if (addr < 0x3F00) {
-        vram[nt_index(addr)] = val;
+        if (ppu_nt_write_hook) ppu_nt_write_hook(addr, val);
+        else                   vram[nt_index(addr)] = val;
     } else {
         uint8_t p = (uint8_t)(addr & 0x1F);
         if ((p & 0x13) == 0x10) p &= 0x0F;
@@ -207,6 +228,7 @@ uint8_t ppu_read_reg(uint16_t addr)
     uint8_t r = 0;
     switch (addr & 7) {
     case 2:                                   /* PPUSTATUS */
+        dbg_2002_reads++;
         r = (uint8_t)((status & 0xE0) | (read_buffer & 0x1F));
         status &= (uint8_t)~0x80;             /* vblank read clears it */
         nmi_occurred = false;
@@ -259,6 +281,7 @@ void ppu_write_reg(uint16_t addr, uint8_t val)
         w ^= 1;
         break;
     case 6:                                   /* PPUADDR */
+        dbg_2006_writes++;
         if (!w) {
             t = (uint16_t)((t & 0x00FF) | ((val & 0x3F) << 8));
         } else {
@@ -268,6 +291,7 @@ void ppu_write_reg(uint16_t addr, uint8_t val)
         w ^= 1;
         break;
     case 7:                                   /* PPUDATA */
+        dbg_2007_writes++;
         ppu_write_vram(v, val);
         increment_v();
         break;
@@ -321,6 +345,42 @@ static void sprite_fetch(int i, int row, sprite_row_t *out)
 
 /* --------------------------- scanline render ---------------------- */
 
+/* Expand one background tile's two pattern bytes into eight palette bytes
+ * at `start` (which may be off either end of the line by up to seven
+ * pixels). The common case — the whole tile is on screen — is four 16-bit
+ * stores; the first and last column of the line go through the same
+ * tables into a scratch row and copy the visible part, which is also what
+ * keeps colour 0 mapped to the backdrop. Both the PPU's own nametable
+ * walk and the mapper's (MMC5) use this, so the two paths cannot drift. */
+static inline void expand_bg_tile(uint8_t *out, int start,
+                                  uint8_t lo, uint8_t hi, uint8_t palette)
+{
+    const uint16_t *pt = pair[palette];
+    uint32_t pat = sprd[lo] | ((uint32_t)sprd[hi] << 1);
+
+    acc_tiles++;
+    if (!pat) acc_zero++;
+
+    if (start >= 0 && start <= PPU_W - 8) {
+        uint8_t *px8 = &out[start];
+        put_pair(px8,     pt[pat & 0xF]);
+        put_pair(px8 + 2, pt[(pat >> 4) & 0xF]);
+        put_pair(px8 + 4, pt[(pat >> 8) & 0xF]);
+        put_pair(px8 + 6, pt[(pat >> 12) & 0xF]);
+    } else {
+        uint8_t tmp[8];
+        put_pair(tmp,     pt[pat & 0xF]);
+        put_pair(tmp + 2, pt[(pat >> 4) & 0xF]);
+        put_pair(tmp + 4, pt[(pat >> 8) & 0xF]);
+        put_pair(tmp + 6, pt[(pat >> 12) & 0xF]);
+        for (int bit = 0; bit < 8; bit++) {
+            int px = start + bit;
+            if (px >= 0 && px < PPU_W)
+                out[px] = tmp[bit];
+        }
+    }
+}
+
 void ppu_render_scanline(uint8_t *out, int y)
 {
     uint32_t t0 = CYC_NOW(), t1;
@@ -349,8 +409,49 @@ void ppu_render_scanline(uint8_t *out, int y)
     acc_fill += t1 - t0;
     t0 = t1;
 
+    /* MMC5 keeps the background CHR banks ($5128-$512B when 8x16 sprites
+     * are on, $5120-$5127 otherwise) apart from the sprite ones, so the
+     * pass boundary is where nes_chr[] has to be rebound — whether or not
+     * the nametable hook below is in use. */
+    if (ppu_chr_bg_hook)
+        ppu_chr_bg_hook();
+
     /* ---------------- background ---------------- */
-    if (bg_on) {
+    if (bg_on && ppu_bg_hook) {
+        /* The cartridge owns the nametables (MMC5). The walk is the same —
+         * one fetch per tile column — but every byte comes from wherever
+         * $5105 points (CIRAM, ExRAM or the fill page), the palette may be
+         * a per-tile ExRAM byte rather than an attribute-table entry, and
+         * the pattern bank can change from tile to tile. All of that lives
+         * in mapper.c; the PPU only supplies the position. */
+        uint16_t la = (uint16_t)((v & 0x0BE0) | line_h);
+        ppu_bg_fetch_t f;
+        f.pat_base = (uint16_t)((ctrl & 0x10) ? 0x1000 : 0x0000);
+        f.fy       = (uint8_t)((v >> 12) & 7);
+        f.y        = y;
+        f.nt_addr  = (uint16_t)(0x2000 | (la & 0x0FFF));
+
+        for (int col = 0; col < 33; col++) {
+            uint8_t tile;
+            uint16_t paddr;
+            f.col = (uint8_t)col;
+            uint8_t palette = ppu_bg_hook(&f, &tile, &paddr);
+            (void)tile;
+            expand_bg_tile(out, col * 8 - line_fx, chr_read(paddr),
+                           chr_read((uint16_t)(paddr + 8)), palette);
+            /* advance to the next tile column the way the PPU's v register
+             * does: coarse X increments and, when it wraps, the horizontal
+             * nametable bit (bit 10) toggles. A plain +1 is wrong twice
+             * over — across a 1 KB boundary it walks into the attribute
+             * table or into the next row instead of the other nametable,
+             * which anything with a non-zero coarse X (every scrolled
+             * screen) and the 33rd fetch of every line would show. */
+            if ((f.nt_addr & 0x1F) == 31)
+                f.nt_addr = (uint16_t)((f.nt_addr & 0xFFE0) ^ 0x400);
+            else
+                f.nt_addr++;
+        }
+    } else if (bg_on) {
         /* Work out the nametable position once, then walk it: tile bytes
          * inside a row are contiguous in VRAM, and a coarse-X wrap just
          * flips the 1 KB nametable bit (bit 10 of the index).
@@ -372,48 +473,25 @@ void ppu_render_scanline(uint8_t *out, int y)
             uint8_t palette = (uint8_t)((attr >> (((cy & 2) << 1) | (cx & 2))) & 3);
 
             uint16_t paddr = (uint16_t)(pat_base + tile * 16 + fy);
-            uint8_t lo = chr_read(paddr);
-            uint8_t hi = chr_read((uint16_t)(paddr + 8));
-            int start = col * 8 - line_fx;
-
-            /* the common case: the whole tile is on screen. The two
-             * bitplanes become one 2-bit-per-pixel word, then four
-             * nibbles become four pixel pairs. */
-            const uint16_t *pt = pair[palette];
-            if (start >= 0 && start <= PPU_W - 8) {
-                uint8_t *px8 = &out[start];
-                uint32_t pat = sprd[lo] | ((uint32_t)sprd[hi] << 1);
-                put_pair(px8,     pt[pat & 0xF]);
-                put_pair(px8 + 2, pt[(pat >> 4) & 0xF]);
-                put_pair(px8 + 4, pt[(pat >> 8) & 0xF]);
-                put_pair(px8 + 6, pt[(pat >> 12) & 0xF]);
-            } else {
-                /* A partially visible tile (first or last column). Expand it
-                 * through the same table as the fast path — colour 0 comes
-                 * out as the backdrop there — and copy the visible part
-                 * across. That keeps the backdrop out of this loop, so no
-                 * pixel of the line is left unwritten and the line does not
-                 * need pre-filling when the background is on. */
-                uint8_t tmp[8];
-                uint32_t pp = sprd[lo] | ((uint32_t)sprd[hi] << 1);
-                put_pair(tmp,     pt[pp & 0xF]);
-                put_pair(tmp + 2, pt[(pp >> 4) & 0xF]);
-                put_pair(tmp + 4, pt[(pp >> 8) & 0xF]);
-                put_pair(tmp + 6, pt[(pp >> 12) & 0xF]);
-                for (int bit = 0; bit < 8; bit++) {
-                    int px = start + bit;
-                    if (px >= 0 && px < PPU_W)
-                        out[px] = tmp[bit];
-                }
-            }
+            expand_bg_tile(out, col * 8 - line_fx, chr_read(paddr),
+                           chr_read((uint16_t)(paddr + 8)), palette);
 
             /* advance to the next tile column: inside a row the VRAM
-             * index just increments; after the last column it wraps to
-             * the other nametable's same row */
-            if (cx == 31)
-                nt_idx = (uint16_t)((nt_idx - 31) ^ 0x400);
-            else
+             * index just increments; column 32 is the one the PPU fetches
+             * after the horizontal wrap, i.e. the same row with the
+             * horizontal nametable bit toggled — which is the same CIRAM
+             * byte only in the two arrangements that put that bit in the
+             * index. Getting this wrong shows up as one wrong tile column
+             * at the right edge whenever fine X is not zero, so the flip
+             * is done through the mirroring rather than by toggling the
+             * index: vertical (a & 0x7FF) is the only mode where the
+             * horizontal bit selects the 1 KB page. */
+            if (cx == 31) {
+                nt_idx = (uint16_t)(nt_idx - 31);
+                if (ppu_mirroring == 1) nt_idx ^= 0x400;
+            } else {
                 nt_idx++;
+            }
             cx = (cx + 1) & 31;
         }
     }
@@ -422,6 +500,11 @@ void ppu_render_scanline(uint8_t *out, int y)
     t1 = CYC_NOW();
     acc_bg += t1 - t0;
     t0 = t1;
+    /* MMC5 keeps the sprite CHR banks in a different set of registers
+     * ($5120-$5127) from the background's ($5128-$512B), so the renderer
+     * hands the pass boundary to the mapper before fetching sprites. */
+    if (ppu_chr_spr_hook)
+        ppu_chr_spr_hook();
     if (sp_on) {
         int h = SPRITE_H();
         int count = 0;
@@ -453,8 +536,10 @@ void ppu_render_scanline(uint8_t *out, int y)
                 int px = sx + c;
                 bool bg_opaque = bg_on && out[px] != backdrop;
 
-                if (i == 0 && bg_opaque && px < 255)
+                if (i == 0 && bg_opaque && px < 255) {
+                    if (!(status & 0x40)) dbg_sprite0_hits++;
                     status |= 0x40;                 /* sprite 0 hit */
+                }
 
                 if (spr.behind && bg_opaque)
                     continue;
@@ -468,10 +553,14 @@ void ppu_render_scanline(uint8_t *out, int y)
 /* ------------------------- per-line scrolling --------------------- */
 
 volatile uint32_t dbg_mask, dbg_ctrl, dbg_v, dbg_t;
+volatile uint32_t ppu_dbg_ctrl, ppu_dbg_mask;
+volatile uint32_t dbg_2002_reads, dbg_sprite0_hits, dbg_2007_writes, dbg_2006_writes;
 
 void ppu_end_scanline(int y)
 {
-    if (y == 261) { dbg_mask = mask; dbg_ctrl = ctrl; dbg_v = v; dbg_t = t; }
+    cur_line = y;
+    if (y == 261) { dbg_mask = mask; dbg_ctrl = ctrl; dbg_v = v; dbg_t = t;
+                    ppu_dbg_ctrl = ctrl; ppu_dbg_mask = mask; }
 
     /* dot 257 of this line: the horizontal scroll for the next one is
      * reloaded from t (coarse X and the horizontal nametable bit), and the
@@ -547,6 +636,17 @@ void ppu_clear_nmi(void)   { nmi_pending = false; }
  * only ticks while the picture is actually being drawn. */
 bool ppu_rendering_enabled(void) { return (mask & 0x18) != 0; }
 
+/* The line the PPU is in the middle of (set at the end of each one, so it
+ * is the line the CPU is running during). MMC5 needs it for the two rules
+ * that follow PPU /RD activity: ExRAM is write-only-while-rendering in
+ * $5104 modes %00/%01, and the "in frame" status bit follows it. */
+bool ppu_visible(void)
+{
+    return cur_line < PPU_H && (mask & 0x18) != 0;
+}
+
+uint8_t *ppu_ciram(void) { return vram; }
+
 void ppu_reset(void)
 {
     ctrl = mask = status = read_buffer = 0;
@@ -556,6 +656,7 @@ void ppu_reset(void)
     line_h = 0;
     line_fx = 0;
     w = 0;
+    cur_line = PPU_H;             /* not rendering until the first line */
     nmi_pending = false;
     nmi_occurred = false;
     suppress_vblank = 0;

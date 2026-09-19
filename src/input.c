@@ -85,9 +85,40 @@ void input_init(void)
     shooter_layout = (held > 1000);
 }
 
+/* ------------------------- driven from the debugger --------------- *
+ * A five-switch shield cannot produce the pad sequences a game's state
+ * machine needs at the frame it needs them (Castlevania III wants a
+ * *newly pressed* START while its title screen sits in sub-state 4, and
+ * the host/board frame comparison has to drive both sides with the same
+ * script). These two words let SWD take the pad over:
+ *
+ *   dbg_pad_override != 0   the pad is dbg_pad_value, every frame
+ *   dbg_pad_auto   != 0     press START for 3 frames every N emulated
+ *                           frames, starting at frame 20 of each period
+ *                           — the script tools/host runners use
+ *
+ * Both are 0 on the bench, so the joystick is untouched until somebody
+ * writes them; the cost is 16 bytes of .bss.
+ */
+volatile uint32_t dbg_pad_override;
+volatile uint32_t dbg_pad_value;
+volatile uint32_t dbg_pad_auto;
+
+/* main.c counts completed frames, so at the moment input_pad() is asked
+ * for frame N it holds N — the phase is absolute and setting dbg_pad_auto
+ * halfway through a run still reproduces the script from frame 0. */
+extern volatile uint32_t dbg_frames;
+
 uint8_t input_pad(void)
 {
     uint8_t pad = 0;
+
+    if (dbg_pad_override)
+        return (uint8_t)dbg_pad_value;
+    if (dbg_pad_auto) {
+        uint32_t f = dbg_frames % dbg_pad_auto;
+        return (f >= 20 && f < 23) ? PAD_START : 0;
+    }
 
     for (unsigned i = 0; i < N_BUTTONS; i++)
         if (!gpio_read(map[i].port, map[i].pin))

@@ -54,17 +54,40 @@ void nes_set_buttons(uint8_t mask) { pad_state = mask; }
 
 static void pad_write(uint8_t v)
 {
+    dbg_pad_writes++;
     pad_strobe = (v & 1) != 0;
     if (pad_strobe)
         pad_shift = pad_state;
 }
 
+/* The last 64 $4016 reads as (cpu.pc << 16) | (strobe << 8) | bit, with
+ * the live button state in the top byte: "the game never saw the button"
+ * and "the game never asked for it" look identical from outside, and this
+ * is what tells them apart (the CPU's pc is the address *during* the read,
+ * so it is the instruction that did it). dbg_pad_reads/_writes count the
+ * accesses, dbg_pad_bits keeps the last 32 bits shifted out. 260 bytes. */
+volatile uint32_t dbg_pad_log[64];
+volatile uint32_t dbg_pad_log_n;
+
 static uint8_t pad_read(void)
 {
-    if (pad_strobe)
-        return (uint8_t)(pad_state & 1);
+    dbg_pad_reads++;
+    if (pad_strobe) {
+        uint8_t bit = (uint8_t)(pad_state & 1);
+        dbg_pad_bits[dbg_pad_bit_n & 31] = bit;
+        dbg_pad_bit_n++;
+        dbg_pad_log[dbg_pad_log_n & 63] = ((uint32_t)cpu.pc << 16)
+            | (1u << 8) | bit | ((uint32_t)pad_state << 24);
+        dbg_pad_log_n++;
+        return bit;
+    }
     uint8_t bit = (uint8_t)(pad_shift & 1);
+    dbg_pad_bits[dbg_pad_bit_n & 31] = bit;
+    dbg_pad_bit_n++;
     pad_shift = (uint8_t)((pad_shift >> 1) | 0x80);
+    dbg_pad_log[dbg_pad_log_n & 63] = ((uint32_t)cpu.pc << 16)
+        | bit | ((uint32_t)pad_state << 24);
+    dbg_pad_log_n++;
     return bit;
 }
 
@@ -81,7 +104,8 @@ uint8_t nes_bus_read_slow(uint16_t addr)
     if (addr < 0x4020)
         return 0;                       /* APU / IO registers     */
     if (addr < 0x6000)
-        return 0;                       /* expansion              */
+        return mapper_read(addr);       /* expansion (MMC5)       */
+    dbg_ram_reads++;
     return wram[addr & 0x1FFF];         /* cartridge work RAM     */
 }
 
@@ -91,6 +115,9 @@ void nes_bus_write_slow(uint16_t addr, uint8_t v)
         nes_ram_2k[addr & 0x7FF] = v;           /* fast path mirror */
     } else if (addr < 0x4000) {
         ppu_write_reg((uint16_t)(addr & 7), v);
+        /* the MMC5 watches the two fully decoded registers only */
+        if (addr == 0x2000 || addr == 0x2001)
+            mapper_ppu_write(addr, v);
     } else if (addr == 0x4014) {
         /* OAM DMA: copy a page of RAM into sprite memory */
         uint16_t base = (uint16_t)(v << 8);
@@ -102,9 +129,14 @@ void nes_bus_write_slow(uint16_t addr, uint8_t v)
     } else if (addr < 0x4020) {
         /* APU registers: not emulated yet */
     } else if (addr < 0x6000) {
-        /* expansion */
+        mapper_write(addr, v);           /* expansion (MMC5) */
     } else if (addr < 0x8000) {
-        wram[addr & 0x1FFF] = v;
+        /* cartridge work RAM: MMC5 gates this behind $5102/$5103 */
+        dbg_ram_writes++;
+        if (mapper_ram_writable())
+            wram[addr & 0x1FFF] = v;
+        else
+            dbg_ram_drops++;
     } else {
         mapper_write(addr, v);                  /* mapper registers */
     }
@@ -130,8 +162,9 @@ int nes_load(const uint8_t *rom, uint32_t size)
     nes_chr_banks = chr_banks;
 
     if (mapper != MAPPER_NROM && mapper != MAPPER_MMC1 &&
-        mapper != MAPPER_UXROM && mapper != MAPPER_MMC3)
-        return NES_ERR_MAPPER;   /* NROM, MMC1, UxROM and MMC3 so far */
+        mapper != MAPPER_UXROM && mapper != MAPPER_MMC3 &&
+        mapper != MAPPER_MMC5)
+        return NES_ERR_MAPPER;   /* NROM, MMC1, UxROM, MMC3 and MMC5 */
 
     uint32_t need = (uint32_t)(16 + trainer + prg_banks * 16384
                                + (chr_banks ? chr_banks * 8192 : 0));
@@ -168,6 +201,9 @@ void nes_reset(void)
     ppu_chr_write = chr_write_fn;
 
     ppu_reset();
+    mapper_reset();     /* MMC5 re-powers its register file, and for a
+                         * CHR-ROM MMC5 cart installs its own $2007 CHR
+                         * read (the bank depends on the last $512x write) */
     cpu_reset();
 }
 
@@ -176,7 +212,11 @@ void nes_reset(void)
  * 341*y/3, which keeps the 2/3-cycle remainder exact. */
 /* phase profiling: host cycles spent emulating the CPU, rendering the
  * PPU and converting bands (readable over SWD) */
-volatile uint32_t dbg_irq_count, dbg_irq_line;
+volatile uint32_t dbg_irq_count, dbg_irq_line, dbg_nmi_count;
+volatile uint32_t dbg_pad_reads, dbg_pad_writes;
+volatile uint32_t dbg_ram_reads, dbg_ram_writes, dbg_ram_drops;
+volatile uint8_t  dbg_pad_bits[32];
+volatile uint32_t dbg_pad_bit_n;
 volatile uint32_t dbg_cyc_cpu, dbg_cyc_ppu, dbg_cyc_frame;
 /* the two pieces of the frame loop that had no counter before: the display
  * hook (which lcd.c times itself, see dbg_cyc_flush) and the per-line
@@ -231,11 +271,11 @@ void nes_run_frame(void)
                 d = c;
             }
 
-            /* one rendered line = one MMC3 scanline-counter tick; the
-             * interrupt is handed to the CPU before it runs the next
-             * line, which is where a split-screen handler wants it */
+            /* one rendered line = one MMC3 (or MMC5) scanline-counter
+             * tick; the interrupt is handed to the CPU before it runs the
+             * next line, which is where a split-screen handler wants it */
             if (ppu_rendering_enabled()) {
-                mapper_scanline();
+                mapper_scanline(y);
                 if (mapper_irq_pending() && cpu_irq()) {
                     dbg_irq_line = (uint32_t)y;   /* when the last one hit */
                     dbg_irq_count++;
@@ -247,6 +287,7 @@ void nes_run_frame(void)
         if (ppu_nmi_pending()) {
             ppu_clear_nmi();
             cpu_nmi();
+            dbg_nmi_count++;
         }
         loop_acc += CYC_NOW() - d;
     }
@@ -263,3 +304,9 @@ void nes_run_frame(void)
 }
 
 uint8_t *nes_ram(void) { return nes_ram_2k; }
+
+uint8_t *nes_prg_ram(uint32_t *size)
+{
+    if (size) *size = sizeof(wram);
+    return wram;
+}

@@ -521,3 +521,82 @@ of two independent instruments — one that judges every decision against a
 record it cannot have influenced (the referee), and one that forces the
 failure condition and requires recovery (the stress test). "It looks right
 now" is not a measurement; 900 injections with 0 missed is.
+
+## 19. The test rig that only pressed START once
+
+The symptom was a cartridge that would not start a level. Castlevania III
+displayed its title screen and its intro perfectly — pixel-identical to the
+PC reference at every frame that was compared — walked its own state
+machine into the game-start handler, and then looped its intro screens
+forever. A hundred thousand frames of that, on the host and on the board.
+Everything pointed at the mapper: the game is MMC5, the working tree's
+MMC5 was brand new, and the emulator was spending 27.78 ms a frame in the
+PPU with 100% of background tiles going through the mapper's nametable
+hook.
+
+Both of those turned out to be true, and neither was the reason.
+
+**The rig was lying.** The host runner takes a pad script — `"20:22=START;
+80:82=START;…"` — and parses it with `strtok`:
+
+```c
+for (char *tok = strtok(buf, ";"); tok; tok = strtok(NULL, ";")) {
+    ...
+    for (char *b = strtok(btns, ","); b; b = strtok(NULL, ","))   /* ← */
+        mask |= button_bit(b);
+}
+```
+
+`strtok` has one global cursor, and the inner call to split the button list
+resets it. The outer loop therefore asks for the next `;`-separated field
+of `btns`, which has none, and stops. `nsteps` came out as 1: the script
+was a single START press at frame 20, twenty frames into a title screen
+that was still initialising. The game's title screen waits for a *newly
+pressed* START while it sits in sub-state 4, which it reaches at frame 24;
+one press before that is simply lost, the 255-frame sub-state timer expires,
+and the game restarts its own intro. Forever. Exactly what was reported.
+
+What made this expensive rather than embarrassing is that the emulator
+*also* had two real bugs, so the wrong hypothesis kept paying out:
+
+* the MMC5 nametable hook was installed unconditionally — `mmc5_apply_nt()`
+  set `ppu_mirroring` for the four mappings the PPU can walk on its own but
+  never cleared `ppu_bg_hook`, and `ppu_render_scanline()` checks the hook
+  first. Every background tile of every MMC5 frame went through the mapper,
+  which is the 27.78 ms and the 100% hook rate, and it is the *performance*
+  bug the lead pointed at;
+* with the hook disabled for those mappings, the PPU's own nametable walk
+  turned out to wrap the wrong bit — it toggled CIRAM bit 10 on the
+  coarse-X wrap in all four mirroring modes, where only vertical mirroring
+  puts the horizontal nametable bit in the index. That is a wrong tile
+  column at the right edge whenever fine X is not zero, and Castlevania III
+  is the first cartridge in the library that renders with fine X set;
+* and the mapper's own attribute-table address masked the row term with
+  `0x18` instead of `0x38`, which drops the whole term for coarse Y ≥ 16 —
+  the palette of the bottom half of every nametable came from the wrong row.
+
+The way out was to stop trusting the harness and get an oracle. FCEUX runs
+headless with a Lua script (`emu.registerbefore` to drive the pad,
+`ppu.readbyte`/`memory.readbyte` to dump state, `memory.registerwrite` to
+log the exact instruction that writes a game variable), and ten minutes of
+that settled in one shot what a day of self-comparison had not: the same
+script reaches gameplay in the reference and stalled here, and the
+reference wrote `$18=$02` from `$E59C` at frame 209 — the "newly pressed
+START" the emulator never produced. Driving the *same* script through both
+sides was the whole trick.
+
+Then the same oracle, backwards. The emulator's nametable state (the PPU's
+view of `$2000-$2FFF` and of the pattern tables) is a dumpable,
+comparable quantity: at frames 40/100/200/260/290 the two sides were
+byte-identical, which is what said the MMC5 mapping, CHR banking and
+attribute handling were right and the pad was not.
+
+**Lessons, in the order they cost time.** A test harness is part of the
+thing under test; when a game does not react to input, print what the
+harness *is sending* before reading another line of the game's
+disassembly — `nsteps=1` would have ended this in a minute. A second
+emulator is worth more than a day of instrumentation, and it is cheap:
+`--loadlua` and forty lines of Lua gave ground truth for the CPU state, the
+nametables, the pattern tables and the pad. And a bug that shows up as
+"the flag never becomes true" is usually two bugs: the harness that never
+sends the input and the emulator that would have mishandled it.

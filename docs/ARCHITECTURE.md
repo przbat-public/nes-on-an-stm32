@@ -28,7 +28,8 @@ flash it.
 ```
 
 `mapper.c` sits beside `nes.c`: it owns the bank pointers the bus reads
-through (NROM, MMC1, UxROM, MMC3) and the MMC3 scanline counter.
+through (NROM, MMC1, UxROM, MMC3, MMC5), the MMC3 scanline counter and,
+for MMC5, the nametables themselves.
 
 ## The CPU core (`cpu6502.c`)
 
@@ -143,6 +144,21 @@ as one unit; the index is a shift and a mask in the hot path.
   last banks of the cartridge, which is what keeps the reset and
   interrupt vectors mapped. `$A000` sets the mirroring, `$A001` protects
   the work RAM.
+- **MMC5** (mapper 5): the kitchen sink — four PRG modes, four CHR modes
+  over twelve ten-bit bank registers, an 8x8 multiplier, a scanline
+  counter, a vertical split, 1 KB of on-chip ExRAM, and nametables that
+  are *not* the console's CIRAM. `$5105` picks a source for each of the
+  four 1 KB pages (CIRAM page 0/1, ExRAM, or a fill page synthesised from
+  `$5106`/`$5107`), so the PPU cannot walk them on its own. It keeps its
+  own walk for the four mappings that *are* ordinary mirroring and the
+  mapper installs a per-tile hook (`ppu_bg_hook`) for the rest — extended
+  attributes, the vertical split, and any mapping that names ExRAM or the
+  fill page. When the hook is installed the mapper owns the tile byte, the
+  palette (extended attributes move it into ExRAM, one byte per tile) and
+  the CHR bank (per tile in those modes), which is why the hook also hands
+  the pattern address back. The 8x16 sprite rule is here too: with 8x16
+  sprites and rendering on, the background has its own four 1 KB bank
+  registers and `ppu.c` calls back at the pass boundary.
 - **The MMC3 scanline counter** (`$C000`-`$E001`) is the part games use to
   split the screen: a down counter reloaded from a latch, clocked **once
   per rendered scanline** (it is the PPU's pattern fetches that clock it,

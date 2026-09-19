@@ -32,11 +32,19 @@ SRCS    = src/main.c src/hal.c src/lcd.c src/input.c \
           src/font5x7.c src/rom_data.c
 OBJS    = $(SRCS:.c=.o) src/startup_l476.o
 
+# The objects depend on the flags, not only on their sources: without this
+# stamp `make LCD_12BIT=1` after a 16-bit build rebuilds nothing and links
+# a mixture of the two display paths, which produces a working-looking
+# image with the wrong colour mode. One stamp per flag combination.
+FLAGS   = $(if $(LCD_12BIT),12,16)
+STAMP   = build/.flags-$(FLAGS)
+$(shell mkdir -p build)
+
 HOSTCC  ?= cc
 HOSTCFLAGS = -O2 -Wall -Wextra -Isrc -Ibuild
 HOST_SRCS  = src/cpu6502.c src/ppu.c src/nes.c src/mapper.c
 
-.PHONY: all flash rom romdata host-test host-ppu-test host-rom clean
+.PHONY: all flash rom romdata host-test host-ppu-test host-nt-test host-rom clean
 
 all: $(TARGET).bin
 
@@ -58,11 +66,15 @@ $(TARGET).bin: $(TARGET).elf
 	$(OBJCOPY) -O binary $< $@
 	$(SIZE) $<
 
-src/%.o: src/%.c
+src/%.o: src/%.c $(STAMP)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-src/startup_l476.o: src/startup_l476.s
+src/startup_l476.o: src/startup_l476.s $(STAMP)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(STAMP):
+	rm -f build/.flags-*
+	touch $@
 
 flash: $(TARGET).bin
 	st-flash write $(TARGET).bin 0x08000000
@@ -79,6 +91,16 @@ host-ppu-test: build/ppu_expand_test
 
 build/ppu_expand_test: tools/ppu_expand_test.c src/ppu.c src/ppu.h
 	$(HOSTCC) $(HOSTCFLAGS) -DNES_BUS_INLINE -o $@ tools/ppu_expand_test.c
+
+# the PPU's own nametable walk against the per-page mapping a mapper would
+# implement (this is the check that the mapper fast path is sound)
+host-nt-test: build/ppu_nt_test
+	./build/ppu_nt_test
+
+build/ppu_nt_test: tools/ppu_nt_test.c src/ppu.c src/mapper.c src/nes.c \
+                   src/ppu.h src/nes.h
+	$(HOSTCC) $(HOSTCFLAGS) -DNES_BUS_INLINE -o $@ tools/ppu_nt_test.c \
+	    src/ppu.c src/mapper.c src/nes.c src/cpu6502.c
 
 build/cpu_test.h: tools/cpu_test.py tools/asm6502.py tools/gen_6502.py
 	python3 tools/cpu_test.py
