@@ -77,8 +77,12 @@ make            # builds the firmware with the self-test cartridge
 make flash      # writes it to the board and resets
 ```
 
-Then hold the board in landscape (the picture is rotated 90°): joystick
-to move, the blue button is **A**.
+Then hold the board in landscape, USB sockets to the left — a quarter turn
+counter-clockwise from the portrait hold mini-mario used. The joystick
+turns with the board, so the emulator's map is the portrait one rotated 90°
+(see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#the-pad-inputc)): joystick
+to move, the blue button is **A**, blue + down is **B**, blue + up is
+**START**.
 
 More detail in [docs/BUILD.md](docs/BUILD.md).
 

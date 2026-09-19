@@ -130,10 +130,26 @@ emulate, the transfer hides completely behind the emulation.
 
 ## The pad (`input.c`)
 
-The joystick and the blue button are mapped to NES buttons in one table:
-left/right/down/up plus **A** on the blue button, **B** on down+A. The
-NES's own protocol (`$4016` strobe + shift) is emulated in `nes.c`, so the
-cartridge sees a normal controller.
+The joystick is soldered to the shield, so its four contacts are fixed to
+the board — but the picture is drawn in landscape, which means the board
+is held a quarter turn counter-clockwise from the portrait hold used in
+the mini-mario project. The stick turns with the board, so each direction
+lands on a different pin than its name suggests:
+
+| pushed by the player | pin | was, in the portrait hold |
+|---|---|---|
+| up | PB0 | right |
+| right | PB4 | down |
+| down | PB6 | left |
+| left | PC0 | up |
+
+The table in `input.c` is exactly the portrait map rotated 90°, so one
+turn of the stick in the hand is one turn of the D-pad in the game.
+
+**A** is the blue button (PC13), **B** is the blue button together with
+down, **START** is the blue button together with up — five switches have
+to cover the NES's eight. The NES's own protocol (`$4016` strobe + shift)
+is emulated in `nes.c`, so the cartridge sees a normal controller.
 
 ## Testing strategy
 

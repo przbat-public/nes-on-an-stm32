@@ -8,3 +8,7 @@ build/
 # generated sources
 src/rom_data.c
 .DS_Store
+
+# screenshots of third-party cartridges: the homebrew game is GPL-3.0,
+# this repository is MIT, so its artwork stays out
+assets/ignizol-*.png

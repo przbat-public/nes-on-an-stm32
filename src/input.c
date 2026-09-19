@@ -1,14 +1,23 @@
 /*
  * input.c — joystick + buttons as an NES controller.
  *
- * THE PIN MAP (single source of truth, verified with the on-screen
- * scanner in the mini-mario project):
+ * THE PINS (verified with the on-screen scanner in the mini-mario
+ * project, where the board was held in PORTRAIT):
  *
- *   LEFT  = PB6      RIGHT = PB0
- *   DOWN  = PB4      UP    = PC0
- *   A     = PC13 (the blue USER button) — jump / fire, like an NES A
- *   B     = PB4 (joystick DOWN)         — run / fire, like an NES B
- *   START = PC13 + DOWN together, or just tap the blue button on menus
+ *   board UP = PC0    board DOWN  = PB4
+ *   board LEFT = PB6  board RIGHT = PB0
+ *   blue USER button B1 = PC13
+ *
+ * The emulator, however, shows the picture in LANDSCAPE, so the board
+ * is held turned a quarter turn to the left compared with mini-mario.
+ * The joystick turns with the board: the contact that used to be at the
+ * top now sits on the player's LEFT, the old right contact is now up,
+ * and so on. The table below is therefore the portrait map rotated 90
+ * degrees counter-clockwise — one turn of the stick in the hand is one
+ * turn of the D-pad in the game.
+ *
+ *   UP = PB0 (board right)     RIGHT = PB4 (board down)
+ *   DOWN = PB6 (board left)    LEFT  = PC0 (board up)
  *
  * All switches are active-low. PA0 is permanently pulled low on this
  * shield and must never appear in the map.
@@ -17,14 +26,16 @@
 #include "hal.h"
 #include "nes.h"
 
-typedef struct { uint8_t port; uint8_t pin; } pin_t;
+typedef struct { uint8_t port; uint8_t pin; uint8_t bit; } pin_t;
 
+/* the table carries the NES bit itself, so the order of the rows is
+ * cosmetic — reordering them can never silently rewire the pad */
 static const pin_t map[] = {
-    /* 0 */ { PORT_B, 6  },   /* LEFT  */
-    /* 1 */ { PORT_B, 0  },   /* RIGHT */
-    /* 2 */ { PORT_B, 4  },   /* DOWN  */
-    /* 3 */ { PORT_C, 0  },   /* UP    */
-    /* 4 */ { PORT_C, 13 },   /* A     */
+    { PORT_C, 0,  PAD_LEFT  },   /* the board's "up" contact    */
+    { PORT_B, 4,  PAD_RIGHT },   /* the board's "down" contact  */
+    { PORT_B, 6,  PAD_DOWN  },   /* the board's "left" contact  */
+    { PORT_B, 0,  PAD_UP    },   /* the board's "right" contact */
+    { PORT_C, 13, PAD_A     },   /* the blue USER button (B1)   */
 };
 #define N_BUTTONS (sizeof(map) / sizeof(map[0]))
 
@@ -47,24 +58,20 @@ void input_init(void)
 uint8_t input_pad(void)
 {
     uint8_t pad = 0;
-    bool left  = !gpio_read(map[0].port, map[0].pin);
-    bool right = !gpio_read(map[1].port, map[1].pin);
-    bool down  = !gpio_read(map[2].port, map[2].pin);
-    bool up    = !gpio_read(map[3].port, map[3].pin);
-    bool a     = !gpio_read(map[4].port, map[4].pin);
 
-    if (left)  pad |= PAD_LEFT;
-    if (right) pad |= PAD_RIGHT;
-    if (up)    pad |= PAD_UP;
-    if (down)  pad |= PAD_DOWN;
-    if (a)     pad |= PAD_A;
+    for (unsigned i = 0; i < N_BUTTONS; i++)
+        if (!gpio_read(map[i].port, map[i].pin))
+            pad |= map[i].bit;
 
-    /* B = DOWN while also holding A (so the joystick alone still walks
-     * and the single button can do both jump and run) */
-    if (a && down) pad |= PAD_B;
-
-    /* START: joystick pushed up + button, or just UP held for menus */
-    if (up && a)   pad |= PAD_START;
+    /* five switches have to cover the NES's eight buttons, so the blue
+     * button alone is A, and the joystick chooses what it means:
+     * holding down as well makes it B (run / fire), holding up makes it
+     * START (the menus) — pushing the stick while pressing the button is
+     * something the games ask for anyway. */
+    if (pad & PAD_A) {
+        if (pad & PAD_DOWN) pad |= PAD_B;
+        if (pad & PAD_UP)   pad |= PAD_START;
+    }
 
     return pad;
 }

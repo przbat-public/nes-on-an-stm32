@@ -161,3 +161,36 @@ exposed by behaving like real hardware:
 **Lesson (again):** a faithful emulator is a debugger for your own ROM.
 Both bugs were found by dumping the board's framebuffer and the emulated
 PPU state, not by staring at the assembler.
+
+## 10. The joystick that was rotated, not broken
+
+The first game played on the board came back with this report: pushing the
+stick **up** moved the player right, **down** moved left, and **left**
+jumped. Three directions wrong is rarely three wires wrong.
+
+The pin map had been measured with the on-screen scanner in the mini-mario
+project, where the board is held **portrait**. The emulator draws in
+**landscape**, so the board is now held a quarter turn counter-clockwise
+and *the joystick turns with it*: its contacts are soldered to the shield,
+so every direction lands on a different pin than its name suggests. The
+map was not wrong, it was measured in another pose.
+
+Two independent clues pinned the rotation down:
+
+- the observed symptoms are a pure 90° rotation: the player's up is the
+  board's right contact (PB0) and the player's down is the board's left
+  contact (PB6) — that is what "up goes right, down goes left" means once
+  you know which pin the old map called right and left;
+- "left jumps" was the giveaway that the *bits* were fine: the player's
+  left is the board's up contact (PC0), which the emulator was faithfully
+  reporting as UP — this cartridge simply puts jump on UP. The pad byte
+  was correct all along; only its wiring to the hand was rotated.
+
+The fix is the portrait table rotated 90°: up = PB0, right = PB4,
+down = PB6, left = PC0, A = PC13 (the blue button).
+
+**Lesson:** a pin map is only valid for the pose it was measured in. While
+fixing this, the first attempt *reordered* the rows of the table while the
+reader still indexed them positionally (`map[0]` = left, …) — a silent
+rewire. The table now carries the NES bit in each row, so its order is
+cosmetic and this class of mistake is impossible to make quietly.

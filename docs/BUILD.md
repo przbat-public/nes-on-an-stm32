@@ -12,7 +12,10 @@ Mount the shield with the joystick on the left of the USB connector
 
 The emulator drives the panel **in landscape**, so hold the board with
 the USB sockets to the left; the 256×240 picture is centred with black
-bars on the sides.
+bars on the sides. That is a quarter turn from the upright (portrait)
+hold, and the joystick turns with the board — which is why the pin map in
+`input.c` is the upright one rotated 90° (see
+[docs/ARCHITECTURE.md](ARCHITECTURE.md#the-pad-inputc)).
 
 ## Toolchain
 
