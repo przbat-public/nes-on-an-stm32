@@ -19,6 +19,14 @@ CFLAGS  = -mcpu=cortex-m4 -mthumb -mfloat-abi=soft -O2 -g \
           -ffunction-sections -fdata-sections -Wall -Wextra -Isrc \
           -DNES_BUS_INLINE -DNES_PROFILING
 
+# LCD_12BIT=1 builds the ST7789 in 12-bit colour (RGB444, COLMOD 0x53, two
+# pixels in three bytes): 92,160 bytes a frame instead of 122,880, i.e. 25%
+# less wire time, at 4 bits per channel instead of 5/6/5. The default (no
+# variable) is the 16-bit path, unchanged. `make LCD_12BIT=1` to build it.
+ifdef LCD_12BIT
+CFLAGS += -DLCD_12BIT
+endif
+
 SRCS    = src/main.c src/hal.c src/lcd.c src/input.c \
           src/cpu6502.c src/ppu.c src/nes.c src/mapper.c \
           src/font5x7.c src/rom_data.c

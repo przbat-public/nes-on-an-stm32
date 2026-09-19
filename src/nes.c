@@ -23,6 +23,7 @@ int nes_prg_banks;
 int nes_chr_banks;
 
 void (*nes_line_hook)(int y, const uint8_t *line);
+uint8_t *(*nes_line_target)(int y);
 
 /* ----------------------------- cartridge -------------------------- */
 
@@ -215,11 +216,15 @@ void nes_run_frame(void)
 
         if (y < 240) {
             uint32_t c = CYC_NOW();
-            ppu_render_scanline(y);
+            /* the display layer hands us the row to render into: writing the
+             * picture straight into its framebuffer saves copying all 240
+             * scanlines again in the line hook */
+            uint8_t *row = nes_line_target ? nes_line_target(y) : ppu_line;
+            ppu_render_scanline(row, y);
             d = CYC_NOW();
             ppu_acc += d - c;
             if (nes_line_hook) {
-                nes_line_hook(y, ppu_line);
+                nes_line_hook(y, row);
                 c = CYC_NOW();
                 hook_acc += c - d;
                 d = c;

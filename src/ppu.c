@@ -321,22 +321,30 @@ static void sprite_fetch(int i, int row, sprite_row_t *out)
 
 /* --------------------------- scanline render ---------------------- */
 
-void ppu_render_scanline(int y)
+void ppu_render_scanline(uint8_t *out, int y)
 {
     uint32_t t0 = CYC_NOW(), t1;
     uint8_t backdrop = pal_cache[0];
 
-    /* word fill, unrolled: the byte loop compiled to a memset call and the
-     * plain word loop to two instructions of overhead per word */
-    uint32_t bd = (uint32_t)backdrop * 0x01010101u;
-    u32a *line32 = (u32a *)(void *)ppu_line;
-    for (int i = 0; i < PPU_W / 4; i += 4) {
-        line32[i + 0] = bd; line32[i + 1] = bd;
-        line32[i + 2] = bd; line32[i + 3] = bd;
-    }
-
     bool bg_on = (mask & 0x08) != 0;
     bool sp_on = (mask & 0x10) != 0;
+
+    /* The backdrop pre-fill is only needed when the background is off: with
+     * it on the tile loop below writes every pixel of the line, because the
+     * expanded palette maps colour 0 to the backdrop (pair[][0]) and the
+     * edge tiles write it explicitly too. That is 256 bytes a line, ~0.5 ms
+     * a frame, that the background path no longer pays for. */
+    if (!bg_on) {
+        /* word fill, unrolled: the byte loop compiled to a memset call and
+         * the plain word loop to two instructions of overhead per word */
+        uint32_t bd = (uint32_t)backdrop * 0x01010101u;
+        u32a *line32 = (u32a *)(void *)out;
+        for (int i = 0; i < PPU_W / 4; i += 4) {
+            line32[i + 0] = bd; line32[i + 1] = bd;
+            line32[i + 2] = bd; line32[i + 3] = bd;
+        }
+    }
+
     t1 = CYC_NOW();
     acc_fill += t1 - t0;
     t0 = t1;
@@ -363,9 +371,6 @@ void ppu_render_scanline(int y)
             uint8_t attr = vram[at_row | (nt_idx & 0x400) | (cx >> 2)];
             uint8_t palette = (uint8_t)((attr >> (((cy & 2) << 1) | (cx & 2))) & 3);
 
-            const uint8_t *pc = &pal_cache[palette * 4];
-            uint8_t c1 = pc[1], c2 = pc[2], c3 = pc[3];
-
             uint16_t paddr = (uint16_t)(pat_base + tile * 16 + fy);
             uint8_t lo = chr_read(paddr);
             uint8_t hi = chr_read((uint16_t)(paddr + 8));
@@ -374,24 +379,31 @@ void ppu_render_scanline(int y)
             /* the common case: the whole tile is on screen. The two
              * bitplanes become one 2-bit-per-pixel word, then four
              * nibbles become four pixel pairs. */
+            const uint16_t *pt = pair[palette];
             if (start >= 0 && start <= PPU_W - 8) {
-                uint8_t *out = &ppu_line[start];
+                uint8_t *px8 = &out[start];
                 uint32_t pat = sprd[lo] | ((uint32_t)sprd[hi] << 1);
-                const uint16_t *pt = pair[palette];
-                put_pair(out,     pt[pat & 0xF]);
-                put_pair(out + 2, pt[(pat >> 4) & 0xF]);
-                put_pair(out + 4, pt[(pat >> 8) & 0xF]);
-                put_pair(out + 6, pt[(pat >> 12) & 0xF]);
+                put_pair(px8,     pt[pat & 0xF]);
+                put_pair(px8 + 2, pt[(pat >> 4) & 0xF]);
+                put_pair(px8 + 4, pt[(pat >> 8) & 0xF]);
+                put_pair(px8 + 6, pt[(pat >> 12) & 0xF]);
             } else {
+                /* A partially visible tile (first or last column). Expand it
+                 * through the same table as the fast path — colour 0 comes
+                 * out as the backdrop there — and copy the visible part
+                 * across. That keeps the backdrop out of this loop, so no
+                 * pixel of the line is left unwritten and the line does not
+                 * need pre-filling when the background is on. */
+                uint8_t tmp[8];
+                uint32_t pp = sprd[lo] | ((uint32_t)sprd[hi] << 1);
+                put_pair(tmp,     pt[pp & 0xF]);
+                put_pair(tmp + 2, pt[(pp >> 4) & 0xF]);
+                put_pair(tmp + 4, pt[(pp >> 8) & 0xF]);
+                put_pair(tmp + 6, pt[(pp >> 12) & 0xF]);
                 for (int bit = 0; bit < 8; bit++) {
                     int px = start + bit;
-                    if (px < 0 || px >= PPU_W)
-                        continue;
-                    uint8_t b = (uint8_t)(7 - bit);
-                    uint8_t pix = (uint8_t)(((lo >> b) & 1) |
-                                            (((hi >> b) & 1) << 1));
-                    if (pix)
-                        ppu_line[px] = (pix == 1) ? c1 : (pix == 2) ? c2 : c3;
+                    if (px >= 0 && px < PPU_W)
+                        out[px] = tmp[bit];
                 }
             }
 
@@ -439,14 +451,14 @@ void ppu_render_scanline(int y)
                 if (pix == 0)
                     continue;
                 int px = sx + c;
-                bool bg_opaque = bg_on && ppu_line[px] != backdrop;
+                bool bg_opaque = bg_on && out[px] != backdrop;
 
                 if (i == 0 && bg_opaque && px < 255)
                     status |= 0x40;                 /* sprite 0 hit */
 
                 if (spr.behind && bg_opaque)
                     continue;
-                ppu_line[px] = pc[pix];
+                out[px] = pc[pix];
             }
         }
     }

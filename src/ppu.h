@@ -1,9 +1,13 @@
 /*
  * ppu.h — the NES picture processing unit (2C02).
  *
- * Output convention: ppu_render_scanline() fills ppu_line[256] with NES
- * colour indices (0..63). Turning those into real colours is the display
- * layer's job, which keeps the PPU testable on a PC.
+ * Output convention: ppu_render_scanline() fills the 256-byte buffer it is
+ * given with NES colour indices (0..63). Turning those into real colours is
+ * the display layer's job, which keeps the PPU testable on a PC. The
+ * display layer passes its own framebuffer row so the renderer writes the
+ * picture once instead of into a line buffer that then has to be copied;
+ * ppu_line is the default row for callers that have no display (the host
+ * tools).
  */
 #pragma once
 #include <stdint.h>
@@ -12,7 +16,7 @@
 #define PPU_W 256
 #define PPU_H 240
 
-extern uint8_t ppu_line[PPU_W];   /* the scanline just rendered */
+extern uint8_t ppu_line[PPU_W];   /* default render target           */
 
 void ppu_reset(void);
 
@@ -25,7 +29,7 @@ uint8_t ppu_read_vram(uint16_t addr);
 void    ppu_write_vram(uint16_t addr, uint8_t v);
 
 /* frame stepping */
-void ppu_render_scanline(int y);   /* visible lines 0..239             */
+void ppu_render_scanline(uint8_t *out, int y);  /* visible lines 0..239 */
 void ppu_end_scanline(int y);      /* called after every line (0..261) */
 void ppu_set_vblank(void);         /* called when entering vblank      */
 void ppu_latch_scroll(void);       /* pre-render: t -> v (scrolling)   */

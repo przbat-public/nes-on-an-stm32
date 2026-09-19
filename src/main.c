@@ -52,6 +52,7 @@ int main(void)
                    "STARTING... (MAPPER 0, NROM)");
 
     nes_line_hook = lcd_nes_line;
+    nes_line_target = lcd_nes_line_target;   /* render straight into fb */
     nes_reset();
 
     fps_last = cycles_now();

@@ -29,6 +29,12 @@ void nes_run_frame(void);
  * the fresh contents of ppu_line[256] */
 extern void (*nes_line_hook)(int y, const uint8_t *line);
 
+/* Where the PPU renders a scanline. The display layer points this at its
+ * own framebuffer row, so the picture is written once instead of into a
+ * line buffer that then has to be copied; NULL (the host tools) renders
+ * into ppu_line as before. */
+extern uint8_t *(*nes_line_target)(int y);
+
 void nes_set_buttons(uint8_t mask);
 
 /* cartridge info (for the on-screen status line) */
