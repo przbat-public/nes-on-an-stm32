@@ -1,67 +1,86 @@
-# Emulator NES na STM32: tutorial od zera
+# Emulator NES na STM32: przewodnik od podstaw
 
-Ten katalog to tutorial pisany po polsku dla ucznia technikum elektronicznego.
-Kod i komentarze w całym repozytorium zostają po angielsku, tekst nauki jest polski.
-
-Repozytorium, w którym leży ten katalog, zawiera **działający emulator**: cztery mappery
-(NROM, MMC1, UxROM, MMC3, MMC5), obsługę pada, obraz na panelu ST7789 i pomiary wydajności.
-Tutorial nie streszcza tego kodu. Prowadzi do niego własną, prostą drogą, a gotowy emulator
-służy jako punkt odniesienia w ostatnich rozdziałach: pokazuje, co trzeba było zrobić,
-żeby gra chodziła 47 razy na sekundę, a nie 17.
+Ten katalog to przewodnik pisany po polsku. Prowadzi czytelnika od pustego okna edytora
+do działającego emulatora konsoli, którą wielu z nas znało jako Pegasusa. Kod i komentarze
+w repozytorium są po angielsku, tekst nauki jest polski.
 
 ## Dla kogo
 
-Czytelnik zna podstawy C (zmienne, wskaźniki, funkcje, przerwania) i potrafi wgrać
-program na płytkę. Nie musi znać NES-a ani budowy procesora 6502. Każdy rozdział
-tłumaczy nowy kawałek sprzętu albo nowy mechanizm konsoli, i kończy się czymś,
-co widać na ekranie.
+Dla kogoś, kto nie napisał jeszcze żadnego programu i nigdy nie wgrywał niczego na płytkę.
+Nie zakładamy znajomości języka C. Nie zakładamy, że wiesz, czym jest kompilator, jak działa
+pamięć programu ani co się dzieje, kiedy naciskasz przycisk reset. Wszystko, czego
+potrzebujesz, wprowadzamy wtedy, gdy staje się potrzebne: najpierw narzędzia i pierwszy
+uruchomiony program, potem zmienne i funkcje, potem wskaźniki, a dopiero potem konsola.
+
+Nie znaczy to, że przewodnik jest łatwy. Kończy się na emulacji procesora, układu obrazu
+i kartridży z przełączaniem pamięci, czyli na rzeczach, które zwykle poznaje się po latach.
+Trudność rośnie po jednym stopniu, a każdy stopień kończy się czymś, co widzisz na panelu
+albo w wyniku testu.
+
+Ten katalog leży w repozytorium, w którym działa już gotowy emulator. Przewodnik nie streszcza
+tego kodu. Prowadzi do niego własną, prostszą drogą, a gotowy emulator służy jako punkt
+odniesienia w końcowych rozdziałach.
 
 ## Jak uczymy
 
 Trzy zasady, każda z konkretnego powodu:
 
-1. **Tutorial prowadzi, nie opisuje.** Najpierw robimy, potem rozumiemy. Rozdział ma
-   zawsze jeden wynik: działający program i obraz, który można sprawdzić okiem.
-   Podział na typy dokumentacji pochodzi z metodyki [Diátaxis](https://diataxis.fr/pl/start-here/):
-   ten katalog jest tutorialem, a `docs/ARCHITECTURE.md` i `docs/PERFORMANCE.md`
-   w repozytorium pełnią rolę wyjaśnienia i referencji.
-2. **Przykład rozpracowany zamiast opisu.** Każdy etap to kompletny, uruchamialny
-   program, a wyjaśnienie stoi obok kodu, nie w osobnym rozdziale. Tak działa
-   [efekt przykładu rozpracowanego](https://dl.acm.org/doi/pdf/10.1145/3732791)
-   i tak maleje obciążenie poznawcze czytelnika.
-3. **Użyj, zmień, zbuduj.** Etap najpierw uruchamiamy w postaci gotowej, potem
-   zmieniamy jedno zachowanie i patrzymy, co się stanie, a dopiero na końcu piszemy
-   własny fragment. Kolejność pochodzi z modelu
+1. **Najpierw robimy, potem tłumaczymy.** Każdy etap ma jeden wynik: program, który działa,
+   i obraz, który można sprawdzić okiem. Podział na typy dokumentacji pochodzi z metodyki
+   [Diátaxis](https://diataxis.fr/pl/start-here/): ten katalog jest przewodnikiem,
+   a `docs/ARCHITECTURE.md` i `docs/PERFORMANCE.md` w repozytorium pełnią rolę wyjaśnienia
+   i referencji.
+2. **Kompletny przykład zamiast opisu.** Etap to gotowy, uruchamialny program, a wyjaśnienie
+   stoi obok kodu, nie w osobnym rozdziale. Tak działa
+   [efekt przykładu rozpracowanego](https://dl.acm.org/doi/pdf/10.1145/3732791) i tak maleje
+   obciążenie czytelnika.
+3. **Użyj, zmień, zbuduj.** Etap najpierw uruchamiamy w postaci gotowej, potem zmieniamy
+   w nim jedno zachowanie i patrzymy, co się stanie, a dopiero na końcu piszemy własny
+   fragment. Kolejność pochodzi z modelu
    [Use–Modify–Create](https://hal.science/hal-04739485v1/preview/ETS_26_3_12.pdf).
+
+## Czego nie robimy
+
+Nie wrzucamy pojęcia bez wyjaśnienia. Jeśli w rozdziale pojawia się liczba, nazwa albo skrót,
+to znaczy, że czytelnik spotkał go wcześniej w tym samym przewodniku albo dostaje wyjaśnienie
+w tym miejscu. Nazwy układów i typów kartridży pojawiają się dopiero wtedy, gdy wiadomo,
+co taki układ robi i po co powstał. Żadnych liczb z cudzych pomiarów bez powodu i bez
+wyjaśnienia, skąd się wzięły.
 
 ## Etapy
 
-Każdy etap to katalog z kodem i rozdziałem tekstu. Po każdym etapie uczeń widzi
-konkretny efekt na panelu, więc wie, czy idzie dobrze.
+Każdy etap to katalog z kodem i rozdziałem. Po każdym etapie coś widać: na panelu,
+na ekranie komputera albo w wyniku testu.
 
-| Etap | Czego dotyczy | Co widać na panelu |
+| Etap | Czego dotyczy | Co widać |
 |---|---|---|
-| 0 | Płytka, panel, SPI, pierwszy piksel | kolorowy prostokąt |
-| 1 | Obraz: framebuffer i wysyłanie pasmami | wzór testowy |
-| 2 | Rdzeń 6502: rejestry, stos, rozkazy | nic, wynik sprawdzamy na hoście |
-| 3 | Autobus pamięci i cartridge iNES | nagłówek ROM-u na ekranie |
-| 4 | PPU: kafle, palety, tło | pierwszy obraz z konsoli |
-| 5 | PPU: duszki i priorytety | obraz z ruchomym obiektem |
-| 6 | Przerwanie NMI i pętla ramki | obraz odświeżany 60 razy na sekundę |
-| 7 | Sterowanie: pad i protokół `$4016` | własny ruch na ekranie |
-| 8 | Przewijanie, sprite zero, podział ekranu | pasek statusu i ruchoma plansza |
-| 9 | Mappery: MMC1 i UxROM | inne cartridge'e |
-| 10 | MMC3 i przerwanie od licznika linii | gry z podziałem ekranu |
-| 11 | MMC5 | Castlevania III |
-| 12 | Wydajność: gdzie ucieka czas ramki | te same gry, trzy razy szybciej |
+| 00 | Stanowisko pracy: kompilator, wgrywanie, pierwszy program | panel świeci jednym kolorem |
+| 01 | Zmienne, funkcje, pętle i warunki na przykładzie kolorów | pasy kolorów |
+| 02 | Wskaźniki i pamięć: czym jest bufor obrazu | własny obrazek z tablicy |
+| 03 | Czym jest mikrokontroler: zegar, rejestry, czas | obraz zmienia się w czasie |
+| 04 | Protokół panelu: co robi pięć przewodów i po co pasma | obraz wysyłany pasmami |
+| 05 | Czym jest procesor: rejestry, stos, rozkazy | wynik testu na komputerze |
+| 06 | Pamięć i autobus: skąd procesor bierze dane | program czytany z pamięci |
+| 07 | Czym jest kartridż: nagłówek, pamięć programu i grafiki | nagłówek odczytany i wypisany |
+| 08 | Układ obrazu: kafle, palety, tło | pierwszy prawdziwy obraz z kartridża |
+| 09 | Duszki i kolejność rysowania | obraz z ruchomym obiektem |
+| 10 | Czas: przerwania i klatki | obraz odświeżany w rytmie konsoli |
+| 11 | Sterowanie: jak konsola czyta przyciski | własny ruch na ekranie |
+| 12 | Przewijanie obrazu i podział ekranu | pasek statusu i ruchoma plansza |
+| 13 | Kartridże większe niż pamięć: po co wymyślono przełączanie banków | inne gry działają |
+| 14 | Najbardziej złożony kartridż z tych, które znamy | duża gra z tego układu |
+| 15 | Dlaczego to chodzi wolno i co z tym zrobić | ta sama gra, wyraźnie szybsza |
+
+Etapy 00-04 nie wymagają żadnej wiedzy o konsoli. Emulacja zaczyna się od etapu 05,
+a kartridże od 07.
 
 ## Język
 
-Tekst piszemy według zasad ze skilla `writing-polish`: strona czynna, konkret
-zamiast ogólników, bez klisz i bez kalk z angielskiego, bez rozwlekłych wstępów.
-Każdy rozdział odpowiada na pytanie czytelnika, a nie na pytanie autora.
-Terminy techniczne zostają w brzmieniu przyjętym w dokumentacji (framebuffer,
-scanline, mapper), bo tłumaczenie ich na siłę utrudnia czytanie źródeł.
+Tekst piszemy według zasad ze skilla `writing-polish`: strona czynna, konkret zamiast
+ogólników, bez klisz i bez kalk z angielskiego, bez rozwlekłych wstępów. Każdy rozdział
+odpowiada na pytanie czytelnika, a nie na pytanie autora. Terminy techniczne zostają
+w brzmieniu przyjętym w dokumentacji (framebuffer, scanline), bo tłumaczenie ich na siłę
+utrudnia czytanie źródeł, ale każde pierwsze użycie ma wyjaśnienie.
 
 ## Stan pracy
 
@@ -70,16 +89,11 @@ scanline, mapper), bo tłumaczenie ich na siłę utrudnia czytanie źródeł.
       przegląd narzędzi (przyrosty 1, 2 i 4 z `docs/STYLE.md`)
 - [ ] refaktor rdzeni emulacji: `cpu6502.c`, `ppu.c`, `mapper.c` (przyrost 3,
       komentarze i nazwy bez zmiany struktury, plik po pliku)
-- [x] etap 0: panel świeci jednym kolorem, kod i rozdział
-- [x] etap 1: zegar 80 MHz, bufor obrazu, pasma, kod i rozdział
 - [x] wspólne budowanie etapów: `make STAGE=00 flash`
-- [ ] etapy 2-12: rdzeń 6502, autobus, PPU, duszki, przerwania, pad, przewijanie,
-      mappery, MMC5, wydajność
-- [ ] sprawdzenie etapów 0 i 1 na panelu (kod kompiluje się bez ostrzeżeń, ale
-      efektu nie widziałem na własne oczy, bo płytka ma wgrane Castlevanię III)
+- [~] etap 00: kod istnieje, rozdział trzeba przepisać tak, żeby wprowadzał kompilator
+      i wgrywanie od zera, zamiast zakładać ich znajomość
+- [ ] etap 01: dopisać część o zmiennych, funkcjach i pętlach (kod istnieje)
+- [ ] etapy 02-15: kod i rozdziały
+- [ ] sprawdzenie etapów na panelu (kod buduje się bez ostrzeżeń, ale efektu na panelu
+      nikt jeszcze nie widział, bo płytka ma wgrane Castlevanię III)
 - [ ] redakcja językowa i przegląd całości
-
-Etapy 0 i 1 budują się jedną komendą i przechodzą `make check` bez ostrzeżeń.
-Kod każdego etapu jest samodzielny: pożycza z emulatora tylko skrypt linkera
-i plik startowy, a wszystkie rejestry deklaruje u siebie na górze, żeby czytelnik
-widział komplet w jednym pliku.
