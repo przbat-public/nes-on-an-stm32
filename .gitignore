@@ -1,0 +1,10 @@
+# build outputs
+build/
+*.o
+*.elf
+*.bin
+*.map
+
+# generated sources
+src/rom_data.c
+.DS_Store

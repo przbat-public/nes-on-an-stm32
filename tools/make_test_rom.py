@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""
+make_test_rom.py — builds a legal NES ROM (iNES, NROM, mapper 0) that
+exercises everything the emulator must get right: CHR pattern tables,
+nametables, the attribute table, palettes, sprites (OAM DMA), NMI, VRAM
+writes during vblank and hardware scrolling.
+
+All the artwork (8x8 font and shapes) is generated here — the ROM is
+100% our own work, so it can live in the repository.
+
+    python3 tools/make_test_rom.py           -> build/test.nes
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from asm6502 import Assembler  # noqa: E402
+
+# ----------------------------------------------------------------- font
+FONT = {
+    '0': [".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."],
+    '1': ["..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."],
+    '2': [".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"],
+    '3': ["####.", "....#", "....#", ".###.", "....#", "....#", "####."],
+    '4': ["...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."],
+    '5': ["#####", "#....", "####.", "....#", "....#", "#...#", ".###."],
+    '6': ["..##.", ".#...", "#....", "####.", "#...#", "#...#", ".###."],
+    '7': ["#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..."],
+    '8': [".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."],
+    '9': [".###.", "#...#", "#...#", ".####", "....#", "...#.", ".##.."],
+    'A': [".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"],
+    'B': ["####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."],
+    'C': [".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."],
+    'D': ["###..", "#..#.", "#...#", "#...#", "#...#", "#..#.", "###.."],
+    'E': ["#####", "#....", "#....", "####.", "#....", "#....", "#####"],
+    'F': ["#####", "#....", "#....", "####.", "#....", "#....", "#...."],
+    'G': [".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".####"],
+    'H': ["#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"],
+    'I': [".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."],
+    'J': ["....#", "....#", "....#", "....#", "#...#", "#...#", ".###."],
+    'K': ["#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"],
+    'L': ["#....", "#....", "#....", "#....", "#....", "#....", "#####"],
+    'M': ["#...#", "##.##", "#.#.#", "#...#", "#...#", "#...#", "#...#"],
+    'N': ["#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"],
+    'O': [".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."],
+    'P': ["####.", "#...#", "#...#", "####.", "#....", "#....", "#...."],
+    'Q': [".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"],
+    'R': ["####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"],
+    'S': [".####", "#....", "#....", ".###.", "....#", "....#", "####."],
+    'T': ["#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."],
+    'U': ["#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."],
+    'V': ["#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."],
+    'W': ["#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#"],
+    'X': ["#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"],
+    'Y': ["#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."],
+    'Z': ["#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"],
+    ' ': [".....", ".....", ".....", ".....", ".....", ".....", "....."],
+    '-': [".....", ".....", ".....", "#####", ".....", ".....", "....."],
+    '.': [".....", ".....", ".....", ".....", ".....", ".##..", ".##.."],
+    '!': ["..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."],
+    ':': [".....", ".##..", ".##..", ".....", ".##..", ".##..", "....."],
+}
+
+SHAPES = {
+    # name -> 8 rows of 8 pixels (tile index assigned after the font)
+    "brick": ["########", "#..#...#", "########", "#..#...#",
+              "########", "#..#...#", "########", "........"],
+    "block": ["########", "#......#", "#......#", "#......#",
+              "#......#", "#......#", "#......#", "########"],
+    "coin": ["..####..", ".#....#.", "#.#..#.#", "#......#",
+             "#.#..#.#", "#..##..#", ".#....#.", "..####.."],
+    "heart": [".##..##.", "########", "########", "########",
+              ".######.", "..####..", "...##...", "........"],
+    "check": ["#.#.#.#.", ".#.#.#.#", "#.#.#.#.", ".#.#.#.#",
+              "#.#.#.#.", ".#.#.#.#", "#.#.#.#.", ".#.#.#.#"],
+    "shade": ["########", ".######.", "..####..", "...##...",
+              "...##...", "..####..", ".######.", "########"],
+    "qmark": [".#####..", "##...##.", ".....##.", "...###..",
+              "...##...", "........", "...##...", "........"],
+    "grass": ["..####..", ".######.", "########", "########",
+              "########", "########", "########", "########"],
+}
+
+FONT_FIRST = 1              # tile 0 stays empty (blank)
+SHAPE_FIRST = None          # assigned in build_chr()
+
+
+def glyph_tile(rows5):
+    """5x7 glyph -> 8 bytes (8x8, one pixel of padding)."""
+    out = []
+    for r in range(8):
+        row = rows5[r] if r < len(rows5) else "....."
+        bits = 0
+        for c, ch in enumerate(row):
+            if ch == '#':
+                bits |= 1 << (6 - c)
+        out.append(bits)
+    return out
+
+
+def shape_tile(rows8):
+    out = []
+    for row in rows8:
+        bits = 0
+        for c, ch in enumerate(row):
+            if ch == '#':
+                bits |= 1 << (7 - c)
+        out.append(bits)
+    return out
+
+
+def build_chr():
+    """512 tiles (8 KB): font + shapes in both pattern tables."""
+    tiles = []
+    tiles.append([0] * 8)                       # tile 0: empty
+    index = {}
+    for ch, rows in FONT.items():
+        index[ch] = len(tiles)
+        tiles.append(glyph_tile(rows))
+    shape_index = {}
+    for name, rows in SHAPES.items():
+        shape_index[name] = len(tiles)
+        tiles.append(shape_tile(rows))
+    while len(tiles) < 256:                     # pad to one pattern table
+        tiles.append([0] * 8)
+
+    # each tile is 16 bytes: 8 low plane + 8 high plane (we use plane 0 only)
+    data = bytearray()
+    for t in tiles:
+        data += bytes(t)
+        data += bytes(8)                        # high bitplane stays 0
+    table = bytes(data)
+    return table + table, index, shape_index   # both pattern tables
+
+
+def build_nametable(index, shape):
+    """30 rows x 32 columns of tile indices + the attribute table."""
+    blank = index[' ']
+    nt = [[blank] * 32 for _ in range(30)]
+
+    def text(row, col, s):
+        for i, ch in enumerate(s):
+            if col + i < 32:
+                nt[row][col + i] = index[ch]
+
+    text(1, 2, "MINI MARIO NES TEST")
+    text(3, 2, "FRAME:")
+    text(5, 1, "SHAPES")
+    for i, name in enumerate(["brick", "coin", "heart", "check", "shade",
+                              "qmark", "grass", "block"]):
+        nt[7][2 + i * 3] = shape[name]
+    text(10, 1, "PALETTES")
+    for p in range(4):
+        for c in range(6):
+            nt[12][2 + p * 7 + c] = shape["block"]
+    text(15, 2, "SCROLLING WORLD 0123456789")
+    text(17, 2, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    text(19, 2, "THE QUICK BROWN FOX JUMPS")
+    text(21, 2, "OVER THE LAZY DOG. 1234567890")
+    text(24, 2, "WWW.PRZBAT.PL - HOMEBREW ROM")
+    text(26, 2, "EMULATOR BRING-UP TEST ROM")
+    text(28, 2, "COMMODORE 64 WAS SLOWER!")
+
+    # attribute table: give each 16x16 block around the shapes/rows some colour
+    attr = [0] * 64
+    for by in range(8):
+        for bx in range(8):
+            v = 0
+            if by in (3, 4):                     # the shape row: palette 1
+                v = 0x55
+            elif by == 5:                        # palettes row
+                v = (bx & 1) * 0x55
+            elif by in (7, 8):                   # text block: palette 2
+                v = 0xAA
+            elif by >= 12:
+                v = 0x55
+            attr[by * 8 + bx] = v
+
+    flat = []
+    for row in nt:
+        flat += row
+    return flat, attr
+
+
+def build_program(index, shape, nt_bytes, attr_bytes):
+    # NROM-128: a 16 KB bank mirrored at both $8000 and $C000, so we
+    # assemble at $C000 and the vectors land at the end of the bank
+    a = Assembler(0xC000)
+    L = a.line          # accepts several lines at once
+    # header: reset + NMI + IRQ vectors are appended at the end
+    L("reset:")
+    L("SEI", "CLD", "LDX #$FF", "TXS")   # stack at $01FF
+    L("LDA #$00", "STA $2000", "STA $2001")     # rendering off while we set up
+    L("wait1:", "LDA $2002", "BPL wait1")
+    L("wait2:", "LDA $2002", "BPL wait2")
+
+    # clear OAM (all sprites at y = $FF -> off screen)
+    L("LDA #$FF", "LDX #$00")
+    L("oamclr:", "STA $0200,X", "INX", "BNE oamclr")
+
+    # palette
+    L("LDA #$3F", "STA $2006", "LDA #$00", "STA $2006")
+    L("LDX #$00")
+    L("palloop:", "LDA pals,X", "STA $2007", "INX", "CPX #$20", "BNE palloop")
+
+    # nametable + attribute table
+    L("LDA #$20", "STA $2006", "LDA #$00", "STA $2006")
+    for b in nt_bytes:
+        L(f"LDA #${b:02X}", "STA $2007")
+    for b in attr_bytes:
+        L(f"LDA #${b:02X}", "STA $2007")
+
+    # sprites in the shadow OAM at $0200 (four sprites)
+    sprites = [
+        (70, shape["coin"], 0x00, 40),    # y, tile, attr, x
+        (70, shape["heart"], 0x01, 60),
+        (70, shape["qmark"], 0x42, 180),  # flipped horizontally
+        (150, shape["shade"], 0x81, 120),  # flipped vertically
+    ]
+    for i, (sy, tile, attr, sx) in enumerate(sprites):
+        L(f"LDA #${sy:02X}", f"STA ${0x0200 + i * 4:04X}")
+        L(f"LDA #${tile:02X}", f"STA ${0x0200 + i * 4 + 1:04X}")
+        L(f"LDA #${attr:02X}", f"STA ${0x0200 + i * 4 + 2:04X}")
+        L(f"LDA #${sx:02X}", f"STA ${0x0200 + i * 4 + 3:04X}")
+
+    # scroll reset + rendering on + NMI on
+    L("LDA #$00", "STA $2005", "STA $2005")
+    L("LDA #$1E", "STA $2001")     # BG + sprites, left columns shown
+    L("LDA #$80", "STA $2000")     # NMI on
+
+    # main loop: once per frame, move sprite 2 and push OAM with DMA.
+    # (the frame counter lives in zero page: $10 = counter, $11 = frames)
+    L("main:")
+    L("waitvb:", "LDA $2002", "BPL waitvb")
+    L("INC $10")
+    L("LDA $10", "LSR A", "LSR A", "CLC", "ADC #60")
+    L("STA $020B")                 # sprite 2 x position (shadow OAM)
+    L("LDA #$02", "STA $4014")     # OAM DMA from $0200
+    L("JMP main")
+
+    # NMI: count frames, scroll, and print the counter into the nametable
+    L("nmi:")
+    L("PHA", "TXA", "PHA", "TYA", "PHA")
+    L("INC $11")                                           # frame counter
+    # VRAM updates first: $2006 clobbers the scroll register, so the
+    # scroll must be written LAST for the pre-render latch to pick it up
+    L("LDA #$20", "STA $2006", "LDA #$43", "STA $2006")    # row 3, col 3
+    L("LDA $11", "AND #$0F", "TAX", "LDA digits,X", "STA $2007")
+    L("LDA #$20", "STA $2006", "LDA #$44", "STA $2006")
+    L("LDA $11", "LSR A", "LSR A", "LSR A", "LSR A", "TAX")
+    L("LDA digits,X", "STA $2007")
+    L("LDA $11", "STA $2005", "LDA #$00", "STA $2005")     # scroll x = frame
+    L("PLA", "TAY", "PLA", "TAX", "PLA", "RTI")
+
+    L("irq:")
+    L("RTI")
+
+    L("pals:")
+    L(".byte $0F,$21,$11,$30")     # backdrop, blue ramp
+    L(".byte $0F,$16,$27,$30")     # red / orange
+    L(".byte $0F,$1A,$2A,$30")     # green
+    L(".byte $0F,$12,$22,$30")     # dark blue
+    L(".byte $0F,$16,$27,$30")     # sprite 0
+    L(".byte $0F,$1A,$2A,$30")     # sprite 1
+    L(".byte $0F,$12,$22,$30")     # sprite 2
+    L(".byte $0F,$30,$10,$00")     # sprite 3
+
+    L("digits:")
+    L(".byte " + ",".join(f"${index[str(d)]:02X}" for d in range(10)))
+
+    # vectors
+    L(".org $FFFA")
+    L(".word nmi, reset, irq")
+
+    return a.assemble()
+
+
+def main():
+    chr_data, index, shape = build_chr()
+    nt_bytes, attr_bytes = build_nametable(index, shape)
+    prog = build_program(index, shape, nt_bytes, attr_bytes)
+
+    # pad PRG to 16 KB
+    PRG_SIZE = 16384
+    if len(prog) > PRG_SIZE:
+        print(f"error: program is {len(prog)} bytes, PRG bank is {PRG_SIZE}")
+        return 1
+    prg = prog + bytes([0xFF] * (PRG_SIZE - len(prog)))
+
+    header = bytearray(b"NES\x1a")
+    header.append(1)             # 1 x 16 KB PRG
+    header.append(1)             # 1 x 8 KB CHR
+    header.append(0x01)          # flags6: vertical mirroring (scrolls sideways)
+    header.append(0x00)          # flags7: NROM
+    header += bytes(8)           # padding
+
+    rom = bytes(header) + prg + chr_data
+    os.makedirs("build", exist_ok=True)
+    path = os.path.join("build", "test.nes")
+    with open(path, "wb") as f:
+        f.write(rom)
+    print(f"wrote {path}: {len(rom)} bytes "
+          f"(PRG {len(prog)} used / {PRG_SIZE}, CHR {len(chr_data)})")
+    print(f"  font tiles: 0-{len(FONT)}  shapes: "
+          + ", ".join(f"{n}={t}" for n, t in shape.items()))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
