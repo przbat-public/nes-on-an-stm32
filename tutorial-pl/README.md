@@ -89,15 +89,22 @@ utrudnia czytanie źródeł, ale każde pierwsze użycie ma wyjaśnienie.
       przegląd narzędzi (przyrosty 1, 2 i 4 z `docs/STYLE.md`)
 - [ ] refaktor rdzeni emulacji: `cpu6502.c`, `ppu.c`, `mapper.c` (przyrost 3,
       komentarze i nazwy bez zmiany struktury, plik po pliku)
-- [x] wspólne budowanie etapów: `make STAGE=00 flash`
+- [x] wspólne budowanie etapów: `make STAGE=00 flash` (etapy z więcej niż jednym plikiem
+      źródłowym mają własny `Makefile`, a etapy na komputer buduje `cc`)
 - [x] etap 00: stanowisko pracy, kompilator, wgrywanie, pierwszy program
 - [x] etap 01: język na kolorach (stałe, zmienne, tablice, funkcje, pętle, warunki)
 - [x] etap 02: pamięć, adresy i wskaźniki (obraz powstaje w buforze)
 - [x] etap 04: zegar, bufor obrazu i pasma (przeniesiony z numeru 01, gdy plan
       przesunął język na początek)
-- [ ] etap 03: czas i zegar — następny do napisania, blokuje poprawki w 00-02
-- [ ] etapy 05-15: emulacja; pełna specyfikacja każdego w REFLEKSJA.md
-- [x] przegląd i refleksja nad dotychczasowymi etapami (REFLEKSJA.md)
+- [x] etap 03: czas i zegar
+- [x] etapy 05-15: procesor, autobus, kartridż, obraz, duszki, przerwania,
+      sterowanie, przewijanie, banki, złożony kartridż, wydajność
+- [x] przegląd każdego etapu przez osobnego agenta (opis w REFLEKSJA.md)
+- [x] wspólne budowanie obsługuje trzy rodzaje etapów: na płytkę, na komputer
+      i takie, które przynoszą własny Makefile
+- [ ] poprawki zgłoszone przez recenzentów w plikach spoza etapów: obietnica
+      zegara w etapie 00, kolejność czytania pliku w etapie 01, odniesienie
+      rozmiaru bufora do pamięci w etapie 02, nieaktualne zdania w etapie 04
 - [ ] sprawdzenie etapów na panelu (kod buduje się bez ostrzeżeń, ale efektu na panelu
       nikt jeszcze nie widział, bo płytka ma wgrane Castlevanię III)
 - [ ] redakcja językowa i przegląd całości

@@ -1,5 +1,12 @@
 # Przegląd etapów, refleksja i plan reszty
 
+**Stan po dopisaniu reszty.** Wszystkie etapy 00-15 istnieją: kod i rozdziały, każdy
+sprawdzony kompilacją bez ostrzeżeń, a etapy na komputer dodatkowo uruchomieniem.
+Poniższa refleksja powstała, gdy istniały tylko 00-04, i zostawiam ją jako zapis tego,
+co wtedy znalazłem; uwagi w niej dotyczące braków są już nieaktualne, a trzy poprawki
+w etapach 00-02 nadal czekają. Specyfikacje etapów 05-15 też zostawiam: opisują, co te
+etapy miały zawierać, więc można je porównać z tym, co naprawdę powstało.
+
 Ten plik jest notatką z czytania własnego tekstu od początku, razem z planem etapów, których
 kodu jeszcze nie ma. Ma odpowiadać na dwa pytania: czy to, co jest, da się zrozumieć bez
 wiedzy wcześniejszej, i czy trudność rośnie stopniowo. Piszę tu także to, co znalazłem
