@@ -4,35 +4,45 @@ gen_6502.py — generates the 6502 instruction dispatch (src/cpu_ops.h).
 
 The opcode matrix lives here as the single source of truth: mnemonic ->
 {mode: opcode}. The script emits one C `case` per opcode, with the right
-addressing helper and the right base cycle count, so the hand-written C
-core (cpu6502.c) only contains the ALU helpers and the memory interface.
+addressing macro and the right base cycle count, so the hand-written C
+core (cpu6502.c) only contains the macro toolbox and the memory
+interface.
 
-The emitted cases address the 6502 registers as the file-scope locals of
-cpu6502.c — reg_pc/reg_a/reg_x/reg_y/reg_sp/reg_p — not as fields of the
-`cpu` struct: the core runs a whole batch of instructions against those
-locals and syncs them into `cpu` once per batch, which is what lets the
-compiler keep them in host registers.
+The emitted cases are written in the *macros* of cpu6502.c — RD()/WR()/
+FETCH8(), A_ORA()/A_ADC()/..., IMM()/ZP()/ABX()/..., CYCLES(), PUSH() —
+which are defined over cpu_run()'s automatic variables
+(pc/a/x/y/sp/p/cyc/page). They are macros and not functions because a
+function cannot touch its caller's locals, and the whole point of the
+locals is that the compiler can keep them in host registers across the
+bus accesses; a file-scope static cache cannot.
+
+Every operand here appears exactly once in the emitted expression, in
+the same place and order the old function-call form evaluated it, so a
+macro like INX() (which steps pc and reads memory) is never evaluated
+twice. Where a case needs a statement — a branch, JSR, JMP (ind) — it
+calls a statement macro (BRANCH_TAKE/JMP_IND) rather than duplicating a
+side-effecting operand.
 
 Run:  python3 tools/gen_6502.py > src/cpu_ops.h
       python3 tools/gen_6502.py --check      (verify against cpu_ops.h)
 """
 import sys
 
-# mode -> (helper expression, extra cycles)
+# mode -> (addressing macro, extra cycles)
 MODES = {
     "imp": ("IMP", 0),
     "acc": ("ACC", 0),
-    "imm": ("imm()", 0),
-    "zp":  ("zp()", 0),
-    "zpx": ("zpx()", 0),
-    "zpy": ("zpy()", 0),
-    "abs": ("abs_()", 0),
-    "abx": ("abx()", 0),     # may add a page-cross cycle
-    "aby": ("aby()", 0),
-    "inx": ("inx()", 0),
-    "iny": ("iny()", 0),
-    "ind": ("ind()", 0),     # only for JMP
-    "rel": ("rel()", 0),
+    "imm": ("IMM()", 0),
+    "zp":  ("ZP()", 0),
+    "zpx": ("ZPX()", 0),
+    "zpy": ("ZPY()", 0),
+    "abs": ("ABS_()", 0),
+    "abx": ("ABX()", 0),     # may add a page-cross cycle
+    "aby": ("ABY()", 0),
+    "inx": ("INX()", 0),
+    "iny": ("INY()", 0),
+    "ind": ("IND()", 0),     # unused: JMP (ind) goes through JMP_IND()
+    "rel": ("REL()", 0),     # unused: branches go through BRANCH_TAKE()
 }
 
 # ---------------------------------------------------------------- opcodes
@@ -148,6 +158,50 @@ BRANCHES = set("BPL BMI BVC BVS BCC BCS BNE BEQ".split())
 READ_OPS = set("LDA LDX LDY EOR AND ORA ADC SBC CMP CPX CPY LAX".split())
 NOP_ILLEGAL = None  # filled below
 
+# branch mnemonic -> the flag test handed to BRANCH_TAKE()
+BRANCH_COND = {
+    "BPL": "!(p & F_N)", "BMI": "p & F_N",
+    "BVC": "!(p & F_V)", "BVS": "p & F_V",
+    "BCC": "!(p & F_C)", "BCS": "p & F_C",
+    "BNE": "!(p & F_Z)", "BEQ": "p & F_Z",
+}
+
+# implied opcode -> body, written in the cpu6502.c macros
+IMPLIED_BODY = {
+    "CLC": "p &= (uint8_t)~F_C", "SEC": "p |= F_C",
+    "CLI": "p &= (uint8_t)~F_I", "SEI": "p |= F_I",
+    "CLV": "p &= (uint8_t)~F_V", "CLD": "p &= (uint8_t)~F_D",
+    "SED": "p |= F_D",
+    "DEX": "x--; SETZN(x)", "DEY": "y--; SETZN(y)",
+    "INX": "x++; SETZN(x)", "INY": "y++; SETZN(y)",
+    "TAX": "x = a; SETZN(x)",
+    "TAY": "y = a; SETZN(y)",
+    "TSX": "x = sp; SETZN(x)",
+    "TXA": "a = x; SETZN(a)",
+    "TXS": "sp = x",
+    "TYA": "a = y; SETZN(a)",
+    "PHA": "PUSH(a)", "PHP": "PUSH((uint8_t)(p | F_B | F_U))",
+    "PLA": "a = PULL(); SETZN(a)",
+    "PLP": "p = (uint8_t)((PULL() & (uint8_t)~F_B) | F_U)",
+    "NOP": "",
+    "BRK": "BRK()",
+    "RTS": "RTS()", "RTI": "RTI()",
+}
+
+# read/ALU opcode -> macro applied to the operand
+ALU_OP = {
+    "EOR": "A_EOR", "AND": "A_AND", "ORA": "A_ORA",
+    "ADC": "A_ADC", "SBC": "A_SBC",
+    "CMP": "A_CMP", "CPX": "A_CPX", "CPY": "A_CPY",
+}
+LOAD_REG = {"LDA": "a", "LDX": "x", "LDY": "y"}
+STORE_REG = {"STA": "a", "STX": "x", "STY": "y"}
+SHIFT_FN = {"ASL": "ASL", "LSR": "LSR", "ROL": "ROL",
+            "ROR": "ROR", "INC": "INC8", "DEC": "DEC8"}
+RMW_ALU = {"DCP": ("DEC8", "A_CMP"), "ISC": ("INC8", "A_SBC"),
+           "SLO": ("ASL", "A_ORA"), "RLA": ("ROL", "A_AND"),
+           "SRE": ("LSR", "A_EOR"), "RRA": ("ROR", "A_ADC")}
+
 
 def base_cycles(mn, mode):
     if mn in BRANCHES:
@@ -167,117 +221,86 @@ def base_cycles(mn, mode):
 
 def emit_case(mn, mode, op, out):
     """out is a list.append-style callable."""
-    helper, _ = MODES[mode]
+    a, _ = MODES[mode]
     cyc = base_cycles(mn, mode)
-    a = helper
+    # the modes whose address may cross a page add one cycle
+    c = f"{cyc} + page" if mode in ("abx", "aby", "iny") else f"{cyc}"
     w = out
 
-    # --- branches: cycle count handled by branch()
+    # --- branches: BRANCH_TAKE evaluates the condition once and sets cyc
     if mn in BRANCHES:
-        cond = {
-            "BPL": "!(reg_p & F_N)", "BMI": "reg_p & F_N",
-            "BVC": "!(reg_p & F_V)", "BVS": "reg_p & F_V",
-            "BCC": "!(reg_p & F_C)", "BCS": "reg_p & F_C",
-            "BNE": "!(reg_p & F_Z)", "BEQ": "reg_p & F_Z",
-        }[mn]
-        w(f"    case 0x{op:02X}: CYCLES(branch({cond})); break;  /* {mn} rel */")
+        w(f"        case 0x{op:02X}: BRANCH_TAKE({BRANCH_COND[mn]}); break;  /* {mn} rel */")
         return
 
     # --- implied (accumulator forms of the shifts are handled below)
     if mode == "imp":
-        body = {
-            "CLC": "reg_p &= (uint8_t)~F_C", "SEC": "reg_p |= F_C",
-            "CLI": "reg_p &= (uint8_t)~F_I", "SEI": "reg_p |= F_I",
-            "CLV": "reg_p &= (uint8_t)~F_V", "CLD": "reg_p &= (uint8_t)~F_D",
-            "SED": "reg_p |= F_D",
-            "DEX": "reg_x--; setzn(reg_x)", "DEY": "reg_y--; setzn(reg_y)",
-            "INX": "reg_x++; setzn(reg_x)", "INY": "reg_y++; setzn(reg_y)",
-            "TAX": "reg_x = reg_a; setzn(reg_x)",
-            "TAY": "reg_y = reg_a; setzn(reg_y)",
-            "TSX": "reg_x = reg_sp; setzn(reg_x)",
-            "TXA": "reg_a = reg_x; setzn(reg_a)",
-            "TXS": "reg_sp = reg_x",
-            "TYA": "reg_a = reg_y; setzn(reg_a)",
-            "PHA": "push(reg_a)", "PHP": "push(reg_p | F_B | F_U)",
-            "PLA": "reg_a = pull(); setzn(reg_a)",
-            "PLP": "reg_p = (uint8_t)((pull() & (uint8_t)~F_B) | F_U)",
-            "NOP": "",
-            "BRK": "brk()",
-            "RTS": "rts()", "RTI": "rti()",
-        }[mn]
+        body = IMPLIED_BODY[mn]
         if body:
-            w(f"    case 0x{op:02X}: {body}; CYCLES({cyc}); break;  /* {mn} */")
+            w(f"        case 0x{op:02X}: {body}; CYCLES({cyc}); break;  /* {mn} */")
         else:
-            w(f"    case 0x{op:02X}: CYCLES({cyc}); break;  /* {mn} */")
+            w(f"        case 0x{op:02X}: CYCLES({cyc}); break;  /* {mn} */")
         return
 
     # --- JMP / JSR
     if mn == "JMP":
         if mode == "abs":
-            w(f"    case 0x{op:02X}: reg_pc = abs_(); CYCLES(3); break;  /* JMP abs */")
+            w(f"        case 0x{op:02X}: pc = ABS_(); CYCLES(3); break;  /* JMP abs */")
         else:
-            w(f"    case 0x{op:02X}: jmp_ind(); CYCLES(5); break;  /* JMP (ind) */")
+            w(f"        case 0x{op:02X}: JMP_IND(); CYCLES(5); break;  /* JMP (ind) */")
         return
     if mn == "JSR":
-        w(f"    case 0x{op:02X}: {{ uint16_t t = abs_(); push16((uint16_t)(reg_pc - 1));"
-          f" reg_pc = t; CYCLES(6); }} break;  /* JSR abs */")
+        w(f"        case 0x{op:02X}: {{ uint16_t t = ABS_(); PUSH16((uint16_t)(pc - 1));"
+          f" pc = t; CYCLES(6); }} break;  /* JSR abs */")
         return
 
     # --- moves with a memory operand
     if mn in READ_OPS:
-        if mn == "LAX":
-            w(f"    case 0x{op:02X}: {{ uint8_t v = rd({a}); reg_a = v; reg_x = v;"
-              f" setzn(v); }} CYCLES({cyc}{' + page' if mode in ('abx','aby','iny') else ''}); break;")
+        if mn == "LAX":                       # one read, into A and X
+            w(f"        case 0x{op:02X}: {{ uint8_t v = RD({a}); a = v; x = v;"
+              f" SETZN(v); }} CYCLES({c}); break;")
             return
-        reg = {"LDA": "reg_a", "LDX": "reg_x", "LDY": "reg_y"}.get(mn, None)
+        reg = LOAD_REG.get(mn)
         if reg:
-            w(f"    case 0x{op:02X}: {reg} = rd({a}); setzn({reg});"
-              f" CYCLES({cyc}{' + page' if mode in ('abx','aby','iny') else ''}); break;  /* {mn} {mode} */")
+            w(f"        case 0x{op:02X}: {reg} = RD({a}); SETZN({reg});"
+              f" CYCLES({c}); break;  /* {mn} {mode} */")
         else:
-            fn = {"EOR": "a_eor", "AND": "a_and", "ORA": "a_ora",
-                  "ADC": "a_adc", "SBC": "a_sbc",
-                  "CMP": "a_cmp", "CPX": "a_cpx", "CPY": "a_cpy"}[mn]
-            w(f"    case 0x{op:02X}: {fn}(rd({a}));"
-              f" CYCLES({cyc}{' + page' if mode in ('abx','aby','iny') else ''}); break;  /* {mn} {mode} */")
+            # the operand goes into a local first: SETZN() inside the ALU
+            # macros uses its argument twice, so handing it a side-effecting
+            # RD(...) expression would read memory twice. The old form,
+            # A_ADC(rd(imm())), evaluated the function argument once; the
+            # local reproduces exactly that.
+            w(f"        case 0x{op:02X}: {{ uint8_t v = RD({a}); {ALU_OP[mn]}(v); }}"
+              f" CYCLES({c}); break;  /* {mn} {mode} */")
         return
 
     # --- stores
     if mn in ("STA", "STX", "STY", "SAX"):
-        reg = {"STA": "reg_a", "STX": "reg_x", "STY": "reg_y",
-               "SAX": "(uint8_t)(reg_a & reg_x)"}[mn]
-        w(f"    case 0x{op:02X}: wr({a}, {reg}); CYCLES({cyc}); break;  /* {mn} {mode} */")
+        # SAX stores the AND of A and X without touching any flag
+        reg = ("(uint8_t)(a & x)" if mn == "SAX" else STORE_REG[mn])
+        w(f"        case 0x{op:02X}: WR({a}, {reg}); CYCLES({cyc}); break;  /* {mn} {mode} */")
         return
 
     # --- read-modify-write (single op, memory)
     if mn in ("ASL", "LSR", "ROL", "ROR", "INC", "DEC"):
+        fn = SHIFT_FN[mn]
         if mode == "acc":
-            fn = {"ASL": "asl", "LSR": "lsr", "ROL": "rol",
-                  "ROR": "ror", "INC": "inc8", "DEC": "dec8"}[mn]
-            reg = "reg_a" if mn in ("ASL", "LSR", "ROL", "ROR") else None
-            w(f"    case 0x{op:02X}: reg_a = {fn}(reg_a); CYCLES(2); break;  /* {mn} A */")
+            w(f"        case 0x{op:02X}: a = {fn}(a); CYCLES(2); break;  /* {mn} A */")
         else:
-            fn = {"ASL": "asl", "LSR": "lsr", "ROL": "rol",
-                  "ROR": "ror", "INC": "inc8", "DEC": "dec8"}[mn]
-            w(f"    case 0x{op:02X}: {{ uint16_t e = {a}; wr(e, {fn}(rd(e))); }}"
+            w(f"        case 0x{op:02X}: {{ uint16_t e = {a}; WR(e, {fn}(RD(e))); }}"
               f" CYCLES({cyc}); break;  /* {mn} {mode} */")
         return
 
     # --- combined illegal RMW+ALU ops
-    if mn in ("DCP", "ISC", "SLO", "RLA", "SRE", "RRA"):
-        step = {
-            "DCP": "dec8", "ISC": "inc8", "SLO": "asl", "RLA": "rol",
-            "SRE": "lsr", "RRA": "ror",
-        }[mn]
-        after = {"DCP": "a_cmp", "ISC": "a_sbc", "SLO": "a_ora",
-                 "RLA": "a_and", "SRE": "a_eor", "RRA": "a_adc"}[mn]
-        w(f"    case 0x{op:02X}: {{ uint16_t e = {a}; uint8_t v = {step}(rd(e));"
-          f" wr(e, v); {after}(v); }} CYCLES({cyc}); break;  /* {mn} {mode} */")
+    if mn in RMW_ALU:
+        step, after = RMW_ALU[mn]
+        w(f"        case 0x{op:02X}: {{ uint16_t e = {a}; uint8_t v = {step}(RD(e));"
+          f" WR(e, v); {after}(v); }} CYCLES({cyc}); break;  /* {mn} {mode} */")
         return
 
-    # --- BIT
+    # --- BIT: one read, then N/V come from the operand and Z from A&operand
     if mn == "BIT":
-        w(f"    case 0x{op:02X}: {{ uint8_t v = rd({a}); reg_p = (uint8_t)((reg_p & ~(F_N | F_V | F_Z))"
-          f" | (v & (F_N | F_V)) | ((reg_a & v) ? 0 : F_Z)); }} CYCLES({cyc}); break;  /* BIT {mode} */")
+        w(f"        case 0x{op:02X}: {{ uint8_t v = RD({a}); p = (uint8_t)((p & ~(F_N | F_V | F_Z))"
+          f" | (v & (F_N | F_V)) | ((a & v) ? 0 : F_Z)); }} CYCLES({cyc}); break;  /* BIT {mode} */")
         return
 
     raise KeyError((mn, mode))
@@ -289,16 +312,49 @@ def build():
         for mode, op in modes.items():
             assert table[op] is None, f"opcode {op:02X} defined twice"
             table[op] = (mn, mode)
-    lines = []
-    out = lines.append
-    out("/* GENERATED by tools/gen_6502.py — do not edit by hand. */")
-    out("/* One case per opcode: addressing helper + base cycle count. */")
+    cases = []
+    out = cases.append
     for op in range(256):
         if table[op] is None:
             # undocumented opcode: behave as a 2-cycle NOP
-            out(f"    case 0x{op:02X}: CYCLES(2); break;  /* illegal -> NOP */")
+            out(f"        case 0x{op:02X}: CYCLES(2); break;  /* illegal -> NOP */")
         else:
             emit_case(table[op][0], table[op][1], op, out)
+
+    lines = []
+    out = lines.append
+    out("/* GENERATED by tools/gen_6502.py — do not edit by hand. */")
+    out("/*")
+    out(" * The instruction loop of cpu_run(), split into one case per opcode.")
+    out(" * Every case is written in the macros cpu6502.c defines over the")
+    out(" * automatic variables of that function — FETCH8()/RD()/WR(),")
+    out(" * IMM()/ZP()/ABX()/..., A_ORA()/A_ADC()/SETZN()/..., CYCLES(),")
+    out(" * PUSH()/PULL()/BRANCH_TAKE()/JMP_IND() — so the registers stay")
+    out(" * locals of the loop and the compiler can hold them in host")
+    out(" * registers; that is why the generator emits the loop itself and")
+    out(" * not only the case labels (a #include cannot sit in a macro).")
+    out(" *")
+    out(" * Operand macros appear exactly once per case, in the order the old")
+    out(" * function-call form evaluated them, so nothing with a side effect")
+    out(" * (INX(), RD(), PULL()) is evaluated twice. `page` is set by the")
+    out(" * addressing macro and read by CYCLES(n + page) in the same case.")
+    out(" */")
+    out("")
+    out("    while (done < budget) {")
+    out("        cyc = 0;")
+    out("        page = 0;")
+    out("        switch (FETCH8()) {")
+    lines.extend(cases)
+    out("        }")
+    out("        if (cyc == 0) cyc = 2;")
+    out("        if (cpu_stall) {")
+    out("            cyc += cpu_stall;         /* OAM DMA: real halted cycles */")
+    out("            cpu_stall = 0;")
+    out("        }")
+    out("        cpu.cycles += (uint32_t)cyc;")
+    out("        done += cyc;")
+    out("        ins++;")
+    out("    }")
     return "\n".join(lines) + "\n", table
 
 

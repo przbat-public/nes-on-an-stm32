@@ -194,3 +194,38 @@ bus helpers and the generated opcode bodies reaching them as macros rather
 than as functions with static operands — which is the same shape every
 fast 6502 interpreter uses. That is the next attempt, and the differential
 harness from this one is the tool to verify it with.
+
+## The macro version: true locals, and it did help
+
+The registers are now automatic variables inside `cpu_run()` — `pc` in an
+ARM register, `a` in another, `x`/`y`/`p` packed into a single word — and
+every bus accessor, addressing mode, stack op and ALU helper reaches them
+as a macro defined inside that function. The generated `cpu_ops.h` emits
+the whole dispatch loop for that reason (a `#include` cannot live inside a
+macro body, as both compilers pointed out).
+
+Measured over SWD on the board, same game, same method as above:
+
+| | before | statics attempt | **macros** |
+|---|---|---|---|
+| host cycles per emulated instruction | 126 | 131 | **102** |
+| core cost per frame | 14.8 ms | 14.8 ms | **9.7 ms** |
+
+So ~19% off the core, ~5 ms off a frame. The frame rate on this cartridge
+barely moves (21 fps) because the core is no longer the biggest item: the
+band conversion and the display link are, and the link's 24.6 ms of wire
+time per frame is the ceiling that no CPU work can go below.
+
+What makes this version work where the previous one did not is visible in
+the disassembly: `cpu` is touched once in the prologue and once in the
+epilogue, and the loop body keeps the state in `r3`-`r5`/`r8` with no
+loads or stores to the struct — the only spill on a straight-line path is
+the accumulator saved across a call to the slow bus path.
+
+Two things came out of this that are worth keeping: `tools/diff_test.c`
+with `tools/diff_setup.py` and `tools/diff_run.sh`, a differential harness
+that runs random instruction streams (mixing `cpu_step`, batches, reset,
+NMI, IRQ and DMA stalls) through the working tree's core and one extracted
+from a git revision and compares state hashes — 35 million instructions
+over seven seeds, plus an exhaustive sweep of all 256 opcodes; and
+`tools/mmc3_result.c`, which checks the MMC3 self-test's result byte.
