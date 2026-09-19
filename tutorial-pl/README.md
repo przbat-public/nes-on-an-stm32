@@ -92,9 +92,12 @@ utrudnia czytanie źródeł, ale każde pierwsze użycie ma wyjaśnienie.
 - [x] wspólne budowanie etapów: `make STAGE=00 flash`
 - [x] etap 00: stanowisko pracy, kompilator, wgrywanie, pierwszy program
 - [x] etap 01: język na kolorach (stałe, zmienne, tablice, funkcje, pętle, warunki)
+- [x] etap 02: pamięć, adresy i wskaźniki (obraz powstaje w buforze)
 - [x] etap 04: zegar, bufor obrazu i pasma (przeniesiony z numeru 01, gdy plan
       przesunął język na początek)
-- [ ] etapy 02, 03 i 05-15: kod i rozdziały
+- [ ] etap 03: czas i zegar — następny do napisania, blokuje poprawki w 00-02
+- [ ] etapy 05-15: emulacja; pełna specyfikacja każdego w REFLEKSJA.md
+- [x] przegląd i refleksja nad dotychczasowymi etapami (REFLEKSJA.md)
 - [ ] sprawdzenie etapów na panelu (kod buduje się bez ostrzeżeń, ale efektu na panelu
       nikt jeszcze nie widział, bo płytka ma wgrane Castlevanię III)
 - [ ] redakcja językowa i przegląd całości
