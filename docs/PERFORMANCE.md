@@ -135,3 +135,37 @@ not rescue a scrolling one: what is left is the 6502 core (~15 ms) and the
 conversion of the bands that do change (~8-10 ms). Those are the next two
 targets, and the self-test cartridges plus the frame comparisons in the
 README are the guard rails for both.
+
+## What the 6502 core actually costs per instruction
+
+Measured on the board with the game running (Prince of Persia), by reading
+`cpu.instructions`, `cpu.cycles` and `dbg_frames` over SWD:
+
+| quantity | value |
+|---|---|
+| instructions per frame | 9 389 |
+| 6502 cycles per frame (`cpu.cycles`) | 30 214 |
+| host cycles per emulated instruction | **126** |
+
+The frame accounting is sound (30 214 cycles is what a 1.79 MHz 6502 does
+in a 60th of a second, and 3.2 cycles per instruction is right), so the
+core is faithful — it is just slow: 126 cycles of a Cortex-M4 per
+instruction is two to four times what a switch-based interpreter should
+need. At 45 cycles per instruction the same work would cost about 5 ms a
+frame instead of 15, which is the difference between 20 and 28 fps on this
+cartridge.
+
+The reason is visible in the code: every opcode reaches the 6502 registers
+through the global `cpu` struct (`cpu.a`, `cpu.pc`, ...), and because the
+bus accesses in between touch memory, the compiler cannot keep them in
+registers across an instruction — each field becomes a load and a store,
+several times per opcode. The fix is the standard one: copy the registers
+into locals at the top of `cpu_run()`, run the whole batch of instructions
+against those locals, and write them back at the end (and in `cpu_nmi()` /
+`cpu_irq()`, which change them from outside). That is a mechanical change
+across `cpu6502.c` and the generated `cpu_ops.h`, guarded by the 19 CPU
+tests and the pixel-for-pixel frame comparisons the project already has.
+
+**Ceiling, for the record:** 122,880 bytes per frame at 40 MHz SPI is
+24.6 ms of wire time. Even with a free CPU that is ~40 fps; 30 fps (33 ms)
+needs the emulation plus the band conversion to fit inside the wire time.
