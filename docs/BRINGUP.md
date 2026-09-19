@@ -194,3 +194,39 @@ fixing this, the first attempt *reordered* the rows of the table while the
 reader still indexed them positionally (`map[0]` = left, …) — a silent
 rewire. The table now carries the NES bit in each row, so its order is
 cosmetic and this class of mistake is impossible to make quietly.
+
+## 11. The game that hung a second after starting
+
+START loaded the level, the picture froze, and the emulator kept rendering
+happily at 17 fps — so the board was fine and the *emulated machine* was
+not. Sampling the emulated CPU over SWD named the culprit in one shot: the
+program counter sat in a four-instruction loop at `$84C0`, and the stack
+pointer leaked 76 bytes per second while it spun.
+
+```
+$84C0  LDA $2002   ; PPU status
+$84C3  AND #$40    ; sprite 0 hit
+$84C5  BNE $84C0   ; spin until the flag CLEARS   <- never happened
+$84C7  LDA $2002
+$84CA  AND #$40
+$84CC  BEQ $84C7   ; then spin until it SETS again
+```
+
+That is the classic beam-racing sync: wait for the sprite-0 flag to drop at
+the start of the frame, then wait for it to appear at scanline N, which
+lands the code at a known point in the picture — this is how the cartridge
+splits the screen for its status bar. The PPU here *set* that flag and
+never cleared it. Reading `$2002` clears vblank, but the two sprite flags
+are cleared by the **pre-render line**, not by the read, so a sticky flag
+means the first loop can never exit.
+
+The fix is `ppu_clear_sprite_flags()` — bit 6 *and* the sprite-overflow bit
+5 — called from the pre-render line beside `ppu_clear_vblank()`. It was
+reproduced on the PC first (same ROM, same loop, same leak) and then proven
+with an A/B render: without the fix frame 900 still shows the game clock at
+5:59, with it the clock reads 5:47.
+
+**Lesson:** "the game hangs" is a statement about the emulator until proven
+otherwise, and the emulated CPU state is cheap to inspect — one struct in
+`.bss`, read over SWD. The program counter named the guilty PPU flag
+immediately; staring at the frozen picture would not have.

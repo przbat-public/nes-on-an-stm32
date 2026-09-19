@@ -383,6 +383,16 @@ void ppu_clear_vblank(void)
     nmi_occurred = false;
 }
 
+/* The sprite flags live in the same status byte and, like vblank, are
+ * cleared once per frame — at the pre-render line, not by reading $2002.
+ * Games use sprite 0 as a beam counter: poll $2002 bit 6 until it clears,
+ * then until it sets again, and that lands them at a known scanline for a
+ * split screen. Leaving the flag sticky hangs them in the first loop. */
+void ppu_clear_sprite_flags(void)
+{
+    status &= (uint8_t)~(0x40 | 0x20);
+}
+
 bool ppu_nmi_pending(void) { return nmi_pending; }
 void ppu_clear_nmi(void)   { nmi_pending = false; }
 

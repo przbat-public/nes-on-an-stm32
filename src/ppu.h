@@ -30,6 +30,7 @@ void ppu_end_scanline(int y);      /* called after every line (0..261) */
 void ppu_set_vblank(void);         /* called when entering vblank      */
 void ppu_latch_scroll(void);       /* pre-render: t -> v (scrolling)   */
 void ppu_clear_vblank(void);
+void ppu_clear_sprite_flags(void); /* pre-render: sprite 0 + overflow  */
 bool ppu_nmi_pending(void);
 void ppu_clear_nmi(void);
 

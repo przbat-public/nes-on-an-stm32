@@ -200,6 +200,7 @@ void nes_run_frame(void)
             ppu_set_vblank();
         if (y == 261) {
             ppu_clear_vblank();
+            ppu_clear_sprite_flags(); /* sprite 0 / overflow restart */
             ppu_latch_scroll();      /* apply the scroll for this frame */
         }
 
