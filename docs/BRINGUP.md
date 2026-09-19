@@ -230,3 +230,38 @@ with an A/B render: without the fix frame 900 still shows the game clock at
 otherwise, and the emulated CPU state is cheap to inspect — one struct in
 `.bss`, read over SWD. The program counter named the guilty PPU flag
 immediately; staring at the frozen picture would not have.
+
+## 12. The split screen that jittered instead of scrolling
+
+With the hang fixed the game ran, and the picture jumped left and right
+while the player walked — the sprite slid over scenery it was not standing
+on. The same thing happened on the PC, and it was easy to measure there:
+the background moved −4, +4, −4, +4 pixels on alternate frames instead of
+scrolling steadily.
+
+The cartridge writes its scroll in two places, which is the normal way to
+split a screen: during vblank it sets the status bar's scroll to zero, and
+right after the sprite-0 hit at line 16 it writes `$2005` again so the
+playfield below the bar scrolls with the camera. Rendering every line from
+the same `v` was enough for the bar and wrong for the playfield: `$2005`
+writes only update `t`, and the real PPU **reloads the horizontal half of
+`v` from `t` at dot 257 of every scanline** (coarse X and the horizontal
+nametable bit, with the fine X latching alongside). Only the vertical half
+is a once-per-frame value, reloaded at the pre-render line. This
+implementation did the vertical reload alone, so the playfield kept the
+status bar's coarse X — while the fine X, which the renderer uses
+directly, *did* follow the writes. The background therefore moved around
+inside an 8-pixel window instead of scrolling: a sawtooth, not a camera.
+
+The fix latches `t & 0x041F` and the fine X at the end of every scanline
+(that is the dot-257 reload) and renders each line from
+`(v & 0x0BE0) | line_h` — vertical from `v`, horizontal from the latch.
+The self-test cartridge renders pixel-identically afterwards (0 of 61,440
+pixels differ), because it sets its scroll in vblank like an ordinary
+game; the game and the board both show a steady −2 pixels per frame while
+walking.
+
+**Lesson:** `v` and `t` are not "the scroll registers" — they are two
+halves of a scanline engine with different reload rules per half, and a
+game that splits the screen depends on the horizontal reload happening 262
+times a frame rather than once.

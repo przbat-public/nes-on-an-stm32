@@ -42,6 +42,18 @@ static uint16_t v, t;             /* current / temporary VRAM address */
 static uint8_t  fine_x;
 static uint8_t  w;                /* first/second write toggle      */
 
+/* The horizontal scroll is not a once-a-frame value. The real PPU reloads
+ * coarse X and the horizontal nametable bit from t at dot 257 of *every*
+ * scanline (and the fine X applies to the next line's fetches), which is
+ * what makes split screens possible: a game writes $2005 right after the
+ * sprite-0 hit so the playfield gets a different scroll than the status
+ * bar above it. Taking the whole position from v once per frame made such
+ * games draw the playfield with the status bar's coarse X while the fine X
+ * still changed — the picture jittered inside an 8-pixel window instead of
+ * scrolling. These two hold what the next line will start with. */
+static uint16_t line_h;           /* coarse X (bits 0-4) + NT X (bit 10) */
+static uint8_t  line_fx;          /* fine X                             */
+
 static bool     nmi_pending;
 static bool     nmi_occurred;     /* for the $2002 read behaviour   */
 static uint8_t  suppress_vblank;
@@ -227,12 +239,15 @@ void ppu_render_scanline(int y)
     if (bg_on) {
         /* Work out the nametable position once, then walk it: tile bytes
          * inside a row are contiguous in VRAM, and a coarse-X wrap just
-         * flips the 1 KB nametable bit (bit 10 of the index). */
-        int cx  = v & 0x1F;
+         * flips the 1 KB nametable bit (bit 10 of the index).
+         * The horizontal half comes from the per-line reload of t, the
+         * vertical half (coarse Y, NT Y, fine Y) from v. */
+        uint16_t la = (uint16_t)((v & 0x0BE0) | line_h);
+        int cx  = la & 0x1F;
         int cy  = (v >> 5) & 0x1F;
         int fy  = (v >> 12) & 7;
         uint16_t pat_base = (ctrl & 0x10) ? 0x1000 : 0x0000;
-        uint16_t nt_idx = nt_index((uint16_t)(0x2000 | (v & 0x0FFF)));
+        uint16_t nt_idx = nt_index((uint16_t)(0x2000 | (la & 0x0FFF)));
         int at_row = 0x3C0 | ((cy >> 2) << 3);
 
         for (int col = 0; col < 33; col++) {
@@ -248,7 +263,7 @@ void ppu_render_scanline(int y)
             uint16_t paddr = (uint16_t)(pat_base + tile * 16 + fy);
             uint8_t lo = chr_read(paddr);
             uint8_t hi = chr_read((uint16_t)(paddr + 8));
-            int start = col * 8 - fine_x;
+            int start = col * 8 - line_fx;
 
             /* the common case: the whole tile is on screen */
             if (start >= 0 && start <= PPU_W - 8) {
@@ -334,6 +349,15 @@ volatile uint32_t dbg_mask, dbg_ctrl, dbg_v, dbg_t;
 void ppu_end_scanline(int y)
 {
     if (y == 261) { dbg_mask = mask; dbg_ctrl = ctrl; dbg_v = v; dbg_t = t; }
+
+    /* dot 257 of this line: the horizontal scroll for the next one is
+     * reloaded from t (coarse X and the horizontal nametable bit), and the
+     * fine X latches with it. Do it before the early return: vblank lines
+     * reload too, and the first visible line must see the values the game
+     * wrote during vblank. */
+    line_h  = (uint16_t)(t & 0x041F);
+    line_fx = fine_x;
+
     /* v advances only while the visible lines are drawn; the pre-render
      * line reloads it from t. Incrementing during vblank as well would
      * shift the picture down by 22 lines every frame and wrap the
@@ -402,6 +426,8 @@ void ppu_reset(void)
     oam_addr = 0;
     v = t = 0;
     fine_x = 0;
+    line_h = 0;
+    line_fx = 0;
     w = 0;
     nmi_pending = false;
     nmi_occurred = false;
