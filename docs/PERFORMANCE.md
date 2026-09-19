@@ -169,3 +169,28 @@ tests and the pixel-for-pixel frame comparisons the project already has.
 **Ceiling, for the record:** 122,880 bytes per frame at 40 MHz SPI is
 24.6 ms of wire time. Even with a free CPU that is ~40 fps; 30 fps (33 ms)
 needs the emulation plus the band conversion to fit inside the wire time.
+
+## The register cache, and why it did not help on the board
+
+The core was restructured so a whole batch of instructions runs against
+cached registers (`reg_pc/reg_a/...`, `exec_one()` inlined into
+`cpu_run()`, `cpu` synced at the batch boundaries only). On the host that
+is worth ~11% of the core and ~5% of a frame, and it is verified
+equivalent: 19/19 CPU checks, 0 differing pixels on the NROM and MMC3
+cartridges, and a differential harness that ran 11.6 million random
+instructions through both cores with identical state hashes.
+
+On the board it is worth nothing. Measured over SWD with the game running:
+**131 host cycles per emulated instruction, against 126 before** — the
+same, i.e. noise.
+
+The reason is in the storage class: those cached registers are file-scope
+*statics*, not true locals. A C compiler may not keep a static object in a
+register across a memory access it cannot prove does not alias it, and the
+core's bus reads and writes go to arbitrary addresses, so GCC spills and
+reloads all six around every single one. To actually win on ARM the
+registers have to be automatic variables *inside* `cpu_run()`, with the
+bus helpers and the generated opcode bodies reaching them as macros rather
+than as functions with static operands — which is the same shape every
+fast 6502 interpreter uses. That is the next attempt, and the differential
+harness from this one is the tool to verify it with.

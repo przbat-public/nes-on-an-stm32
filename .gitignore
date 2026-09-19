@@ -12,3 +12,7 @@ src/rom_data.c
 # cartridge images stay out of the repository (the two screenshots in
 # assets/ are included with attribution -- see the README)
 *.nes
+
+# python bytecode cache
+tools/__pycache__/
+__pycache__/

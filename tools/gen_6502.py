@@ -7,6 +7,12 @@ The opcode matrix lives here as the single source of truth: mnemonic ->
 addressing helper and the right base cycle count, so the hand-written C
 core (cpu6502.c) only contains the ALU helpers and the memory interface.
 
+The emitted cases address the 6502 registers as the file-scope locals of
+cpu6502.c — reg_pc/reg_a/reg_x/reg_y/reg_sp/reg_p — not as fields of the
+`cpu` struct: the core runs a whole batch of instructions against those
+locals and syncs them into `cpu` once per batch, which is what lets the
+compiler keep them in host registers.
+
 Run:  python3 tools/gen_6502.py > src/cpu_ops.h
       python3 tools/gen_6502.py --check      (verify against cpu_ops.h)
 """
@@ -169,10 +175,10 @@ def emit_case(mn, mode, op, out):
     # --- branches: cycle count handled by branch()
     if mn in BRANCHES:
         cond = {
-            "BPL": "!(cpu.p & F_N)", "BMI": "cpu.p & F_N",
-            "BVC": "!(cpu.p & F_V)", "BVS": "cpu.p & F_V",
-            "BCC": "!(cpu.p & F_C)", "BCS": "cpu.p & F_C",
-            "BNE": "!(cpu.p & F_Z)", "BEQ": "cpu.p & F_Z",
+            "BPL": "!(reg_p & F_N)", "BMI": "reg_p & F_N",
+            "BVC": "!(reg_p & F_V)", "BVS": "reg_p & F_V",
+            "BCC": "!(reg_p & F_C)", "BCS": "reg_p & F_C",
+            "BNE": "!(reg_p & F_Z)", "BEQ": "reg_p & F_Z",
         }[mn]
         w(f"    case 0x{op:02X}: CYCLES(branch({cond})); break;  /* {mn} rel */")
         return
@@ -180,21 +186,21 @@ def emit_case(mn, mode, op, out):
     # --- implied (accumulator forms of the shifts are handled below)
     if mode == "imp":
         body = {
-            "CLC": "cpu.p &= (uint8_t)~F_C", "SEC": "cpu.p |= F_C",
-            "CLI": "cpu.p &= (uint8_t)~F_I", "SEI": "cpu.p |= F_I",
-            "CLV": "cpu.p &= (uint8_t)~F_V", "CLD": "cpu.p &= (uint8_t)~F_D",
-            "SED": "cpu.p |= F_D",
-            "DEX": "cpu.x--; setzn(cpu.x)", "DEY": "cpu.y--; setzn(cpu.y)",
-            "INX": "cpu.x++; setzn(cpu.x)", "INY": "cpu.y++; setzn(cpu.y)",
-            "TAX": "cpu.x = cpu.a; setzn(cpu.x)",
-            "TAY": "cpu.y = cpu.a; setzn(cpu.y)",
-            "TSX": "cpu.x = cpu.sp; setzn(cpu.x)",
-            "TXA": "cpu.a = cpu.x; setzn(cpu.a)",
-            "TXS": "cpu.sp = cpu.x",
-            "TYA": "cpu.a = cpu.y; setzn(cpu.a)",
-            "PHA": "push(cpu.a)", "PHP": "push(cpu.p | F_B | F_U)",
-            "PLA": "cpu.a = pull(); setzn(cpu.a)",
-            "PLP": "cpu.p = (uint8_t)((pull() & (uint8_t)~F_B) | F_U)",
+            "CLC": "reg_p &= (uint8_t)~F_C", "SEC": "reg_p |= F_C",
+            "CLI": "reg_p &= (uint8_t)~F_I", "SEI": "reg_p |= F_I",
+            "CLV": "reg_p &= (uint8_t)~F_V", "CLD": "reg_p &= (uint8_t)~F_D",
+            "SED": "reg_p |= F_D",
+            "DEX": "reg_x--; setzn(reg_x)", "DEY": "reg_y--; setzn(reg_y)",
+            "INX": "reg_x++; setzn(reg_x)", "INY": "reg_y++; setzn(reg_y)",
+            "TAX": "reg_x = reg_a; setzn(reg_x)",
+            "TAY": "reg_y = reg_a; setzn(reg_y)",
+            "TSX": "reg_x = reg_sp; setzn(reg_x)",
+            "TXA": "reg_a = reg_x; setzn(reg_a)",
+            "TXS": "reg_sp = reg_x",
+            "TYA": "reg_a = reg_y; setzn(reg_a)",
+            "PHA": "push(reg_a)", "PHP": "push(reg_p | F_B | F_U)",
+            "PLA": "reg_a = pull(); setzn(reg_a)",
+            "PLP": "reg_p = (uint8_t)((pull() & (uint8_t)~F_B) | F_U)",
             "NOP": "",
             "BRK": "brk()",
             "RTS": "rts()", "RTI": "rti()",
@@ -208,22 +214,22 @@ def emit_case(mn, mode, op, out):
     # --- JMP / JSR
     if mn == "JMP":
         if mode == "abs":
-            w(f"    case 0x{op:02X}: cpu.pc = abs_(); CYCLES(3); break;  /* JMP abs */")
+            w(f"    case 0x{op:02X}: reg_pc = abs_(); CYCLES(3); break;  /* JMP abs */")
         else:
             w(f"    case 0x{op:02X}: jmp_ind(); CYCLES(5); break;  /* JMP (ind) */")
         return
     if mn == "JSR":
-        w(f"    case 0x{op:02X}: {{ uint16_t t = abs_(); push16((uint16_t)(cpu.pc - 1));"
-          f" cpu.pc = t; CYCLES(6); }} break;  /* JSR abs */")
+        w(f"    case 0x{op:02X}: {{ uint16_t t = abs_(); push16((uint16_t)(reg_pc - 1));"
+          f" reg_pc = t; CYCLES(6); }} break;  /* JSR abs */")
         return
 
     # --- moves with a memory operand
     if mn in READ_OPS:
         if mn == "LAX":
-            w(f"    case 0x{op:02X}: {{ uint8_t v = rd({a}); cpu.a = v; cpu.x = v;"
+            w(f"    case 0x{op:02X}: {{ uint8_t v = rd({a}); reg_a = v; reg_x = v;"
               f" setzn(v); }} CYCLES({cyc}{' + page' if mode in ('abx','aby','iny') else ''}); break;")
             return
-        reg = {"LDA": "cpu.a", "LDX": "cpu.x", "LDY": "cpu.y"}.get(mn, None)
+        reg = {"LDA": "reg_a", "LDX": "reg_x", "LDY": "reg_y"}.get(mn, None)
         if reg:
             w(f"    case 0x{op:02X}: {reg} = rd({a}); setzn({reg});"
               f" CYCLES({cyc}{' + page' if mode in ('abx','aby','iny') else ''}); break;  /* {mn} {mode} */")
@@ -237,8 +243,8 @@ def emit_case(mn, mode, op, out):
 
     # --- stores
     if mn in ("STA", "STX", "STY", "SAX"):
-        reg = {"STA": "cpu.a", "STX": "cpu.x", "STY": "cpu.y",
-               "SAX": "(uint8_t)(cpu.a & cpu.x)"}[mn]
+        reg = {"STA": "reg_a", "STX": "reg_x", "STY": "reg_y",
+               "SAX": "(uint8_t)(reg_a & reg_x)"}[mn]
         w(f"    case 0x{op:02X}: wr({a}, {reg}); CYCLES({cyc}); break;  /* {mn} {mode} */")
         return
 
@@ -247,8 +253,8 @@ def emit_case(mn, mode, op, out):
         if mode == "acc":
             fn = {"ASL": "asl", "LSR": "lsr", "ROL": "rol",
                   "ROR": "ror", "INC": "inc8", "DEC": "dec8"}[mn]
-            reg = "cpu.a" if mn in ("ASL", "LSR", "ROL", "ROR") else None
-            w(f"    case 0x{op:02X}: cpu.a = {fn}(cpu.a); CYCLES(2); break;  /* {mn} A */")
+            reg = "reg_a" if mn in ("ASL", "LSR", "ROL", "ROR") else None
+            w(f"    case 0x{op:02X}: reg_a = {fn}(reg_a); CYCLES(2); break;  /* {mn} A */")
         else:
             fn = {"ASL": "asl", "LSR": "lsr", "ROL": "rol",
                   "ROR": "ror", "INC": "inc8", "DEC": "dec8"}[mn]
@@ -270,8 +276,8 @@ def emit_case(mn, mode, op, out):
 
     # --- BIT
     if mn == "BIT":
-        w(f"    case 0x{op:02X}: {{ uint8_t v = rd({a}); cpu.p = (uint8_t)((cpu.p & ~(F_N | F_V | F_Z))"
-          f" | (v & (F_N | F_V)) | ((cpu.a & v) ? 0 : F_Z)); }} CYCLES({cyc}); break;  /* BIT {mode} */")
+        w(f"    case 0x{op:02X}: {{ uint8_t v = rd({a}); reg_p = (uint8_t)((reg_p & ~(F_N | F_V | F_Z))"
+          f" | (v & (F_N | F_V)) | ((reg_a & v) ? 0 : F_Z)); }} CYCLES({cyc}); break;  /* BIT {mode} */")
         return
 
     raise KeyError((mn, mode))
