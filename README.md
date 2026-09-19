@@ -134,12 +134,23 @@ Then hold the board in landscape, USB sockets to the left. The joystick
 turns with the board, so the emulator's map is a quarter turn from the
 upright one ([why](docs/ARCHITECTURE.md#the-pad-inputc)):
 
-| NES button | On the board |
-|---|---|
-| D-pad | the joystick, in the direction you are looking at |
-| **A** | the blue button |
-| **B** | blue button + joystick down |
-| **START** | blue button + joystick up (press this to start a game) |
+Four directions and one button have to cover the NES's eight, so the
+blue button means different things in combination — and which of A and B
+it carries depends on a layout chosen **at reset**:
+
+| NES button | gamepad layout (default) | shooter layout (hold blue at reset) |
+|---|---|---|
+| D-pad | the joystick, in the direction you are looking at | same |
+| **A** | blue button | blue button + joystick up |
+| **B** | blue button + joystick down | blue button |
+| **START** | blue button + joystick up, held | blue button + joystick down, held |
+
+The default suits games that act on A (jump, Mario-style); the shooter
+layout puts **fire** on the bare button, because in a game like Contra
+that is the button you hold down the whole time while running, and it
+cannot live on a combination. START always needs its combination *held*
+for about half a second, so that a quick tap of fire while ducking does
+not pause the game.
 
 More detail in [docs/BUILD.md](docs/BUILD.md).
 

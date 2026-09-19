@@ -163,10 +163,22 @@ lands on a different pin than its name suggests:
 The table in `input.c` is exactly the portrait map rotated 90°, so one
 turn of the stick in the hand is one turn of the D-pad in the game.
 
-**A** is the blue button (PC13), **B** is the blue button together with
-down, **START** is the blue button together with up — five switches have
-to cover the NES's eight. The NES's own protocol (`$4016` strobe + shift)
-is emulated in `nes.c`, so the cartridge sees a normal controller.
+Five switches have to cover the NES's eight inputs, so the blue button
+(PC13) carries different bits depending on the combination, and on the
+**layout** chosen in `input_init()` — holding the button while the board
+comes out of reset picks the second one:
+
+| layout | A | B | START |
+|---|---|---|---|
+| gamepad (default) | blue | blue + down | blue + up, held |
+| shooter | blue + up | blue | blue + down, held |
+
+The shooter layout exists because games like Contra put fire on B: it is
+held constantly while running, so it has to sit on the bare button. START
+is always the combination held for ~0.7 s, which keeps a tap of fire
+while ducking from pausing the game. The NES's own protocol (`$4016`
+strobe + shift) is emulated in `nes.c`, so the cartridge sees a normal
+controller.
 
 ## Testing strategy
 

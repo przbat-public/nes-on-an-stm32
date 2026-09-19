@@ -19,6 +19,23 @@
  *   UP = PB0 (board right)     RIGHT = PB4 (board down)
  *   DOWN = PB6 (board left)    LEFT  = PC0 (board up)
  *
+ * The NES pad has eight inputs and this shield gives us five: four
+ * directions and one button. Which of A and B the button means is decided
+ * by the layout, and the layout is chosen at reset — hold the blue button
+ * while the board boots for the second one:
+ *
+ *   gamepad (default)   A = blue            jump / act
+ *                       B = blue + down     run / secondary
+ *                       START = blue + up   held for a moment
+ *
+ *   shooter             B = blue            fire — the button you hold all
+ *                                           the time while running
+ *                       A = blue + up       jump
+ *                       START = blue + down held for a moment
+ *
+ * The shooter layout exists because games like Contra put *fire* on B:
+ * with it on a combination the player could not shoot while running.
+ *
  * All switches are active-low. PA0 is permanently pulled low on this
  * shield and must never appear in the map.
  */
@@ -26,7 +43,12 @@
 #include "hal.h"
 #include "nes.h"
 
+#define START_HOLD 12           /* ~0.7 s at this emulator's frame rate */
+
 typedef struct { uint8_t port; uint8_t pin; uint8_t bit; } pin_t;
+
+static bool    shooter_layout;      /* chosen in input_init()  */
+static uint8_t start_hold;          /* frames the START combo is held */
 
 /* the table carries the NES bit itself, so the order of the rows is
  * cosmetic — reordering them can never silently rewire the pad */
@@ -53,6 +75,13 @@ void input_init(void)
     jtag_release();
     for (unsigned i = 0; i < N_BUTTONS; i++)
         gpio_input_pullup(map[i].port, map[i].pin);
+
+    /* Which layout is active is decided here, before the game starts:
+     * hold the blue button while the board comes out of reset. */
+    unsigned held = 0;
+    for (unsigned i = 0; i < 2000; i++)
+        if (!gpio_read(PORT_C, 13)) held++;
+    shooter_layout = (held > 1000);
 }
 
 uint8_t input_pad(void)
@@ -63,14 +92,30 @@ uint8_t input_pad(void)
         if (!gpio_read(map[i].port, map[i].pin))
             pad |= map[i].bit;
 
-    /* five switches have to cover the NES's eight buttons, so the blue
-     * button alone is A, and the joystick chooses what it means:
-     * holding down as well makes it B (run / fire), holding up makes it
-     * START (the menus) — pushing the stick while pressing the button is
-     * something the games ask for anyway. */
-    if (pad & PAD_A) {
-        if (pad & PAD_DOWN) pad |= PAD_B;
-        if (pad & PAD_UP)   pad |= PAD_START;
+    /* The blue button arrives on the A bit; what it means depends on the
+     * layout (see the top of this file). START needs the combination to
+     * be *held* for a moment: a quick tap of fire while ducking must not
+     * pause the game. */
+    bool blue = (pad & PAD_A) != 0;
+    bool up   = (pad & PAD_UP) != 0;
+    bool down = (pad & PAD_DOWN) != 0;
+
+    if (shooter_layout) {
+        pad &= (uint8_t)~PAD_A;              /* the button is B here */
+        if (blue) pad |= PAD_B;              /* fire */
+        if (blue && up) pad |= PAD_A;        /* jump, as shooters want it */
+        if (blue && down) {
+            if (++start_hold >= START_HOLD) pad |= PAD_START;
+        } else {
+            start_hold = 0;
+        }
+    } else {
+        if (blue && down) pad |= PAD_B;      /* secondary action */
+        if (blue && up) {
+            if (++start_hold >= START_HOLD) pad |= PAD_START;
+        } else {
+            start_hold = 0;
+        }
     }
 
     return pad;
