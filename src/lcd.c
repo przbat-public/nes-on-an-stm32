@@ -16,6 +16,7 @@
 #include "lcd.h"
 #include "hal.h"
 #include "font5x7.h"
+#include <string.h>
 
 #ifdef NES_PROFILING
 extern uint32_t cycles_now(void);
@@ -52,6 +53,13 @@ volatile uint32_t dbg_lcd_conv_ok;   /* set by the boot self-check */
  * transfer would overwrite the first one's registers mid-flight. */
 static uint16_t stage[BAND_BYTES / 2];   /* 16-bit aligned on purpose */
 static int     dma_inflight;
+
+/* What the panel already holds, band for band. A band that did not change
+ * is neither converted nor sent, which saves both the CPU work and the
+ * SPI traffic; the buffer starts as 0xFF, which is not a valid NES colour,
+ * so the first frame sends everything. */
+static uint8_t sent[NES_W * BAND_H];
+volatile uint32_t dbg_bands_sent, dbg_bands_skipped;
 
 /* ------------------------------------------------------------ palette */
 /* the 64 NES (2C02) colours as RGB888 — the same table as
@@ -152,6 +160,8 @@ void lcd_init(void)
     lcd_conv_selfcheck();
 
     for (uint32_t i = 0; i < sizeof(fb); i++) fb[i] = 0x0F;   /* black */
+    memset(sent, 0xFF, sizeof(sent));     /* 0xFF is not a NES colour: the
+                                           * first frame sends everything */
 
     gpio_clear(PORT_A, PIN_RST); delay_ms(20);
     gpio_set(PORT_A, PIN_RST);   delay_ms(120);
@@ -223,6 +233,18 @@ volatile uint32_t dbg_cyc_band, dbg_cyc_wait;   /* where a frame goes */
 
 static void push_band(int y0)
 {
+    const uint8_t *src = fb + (uint32_t)y0 * FB_W;
+
+    uint32_t diff = 0;
+    for (int i = 0; i < NES_W * BAND_H; i++)
+        diff |= (uint32_t)(src[i] ^ sent[i]);
+    if (diff == 0) {
+        dbg_bands_skipped++;
+        return;                       /* the panel is already showing this */
+    }
+    memcpy(sent, src, sizeof(sent));
+    dbg_bands_sent++;
+
     uint32_t t0 = CYC_NOW();
     /* the previous band must be off the wire before we reuse the buffer
      * (it has had a whole band's worth of rendering time to finish) */
@@ -234,7 +256,6 @@ static void push_band(int y0)
     t0 = CYC_NOW();
 
     uint16_t *dst = stage;
-    const uint8_t *src = fb + (uint32_t)y0 * FB_W;
 
     for (int i = 0; i < NES_W * BAND_H; i += 4) {
         dst[i + 0] = pal_sw[src[i + 0] & 0x3F];

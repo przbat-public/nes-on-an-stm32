@@ -106,11 +106,11 @@ Two things follow from that, and one of them is a hard ceiling:
    emulation gets. 30 fps means a 33 ms budget, so emulation plus
    conversion has to fit in ~8 ms — that is a different class of work than
    the current 33 ms.
-2. **Half of the frame is not in these counters at all** (~15 ms): the
-   30 band windows (`set_window`: 3 commands plus 2 data phases with CS
-   toggling each) and the DMA waits. Those are the next things to measure
-   and cut — fewer, larger bands would cut both, at the cost of more
-   staging RAM.
+2. **The rest of the frame is outside `nes_run_frame()`**: `dbg_cyc_frame`
+   is measured inside the frame loop, and a 20 fps game spends roughly
+   15 ms per frame after it returns — mostly `lcd_nes_frame_end()` waiting
+   for the last band to leave the wire, plus the per-frame bookkeeping.
+   That wait is what the band skipping below attacks.
 
 What was already cut: the band conversion now swaps bytes in the palette
 once at boot (`pal_sw[]`) and writes 16-bit values four pixels at a time,
@@ -119,3 +119,19 @@ went from 20 to 22 fps, and `lcd_conv_selfcheck()` verifies the byte order
 at every boot against bytes worked out from the NES palette by hand
 (`dbg_lcd_conv_ok`), because a wrong byte order here would show up only as
 wrong colours on the panel.
+
+## Bands that did not change are not sent
+
+`push_band()` now keeps a copy of what the panel was last given and skips
+a band whose 2 KB are identical: no conversion, no SPI traffic. On Prince
+of Persia about a fifth to a quarter of the bands are skipped
+(`dbg_bands_sent` / `dbg_bands_skipped` in `.bss`, read over SWD), which
+matters twice — the conversion costs CPU time *and* the transfer costs
+wire time, and the wire is the ceiling the section above describes.
+
+The frame rate on that cartridge stays in the 19-22 fps range either way,
+so the honest headline is that this change helps static screens and does
+not rescue a scrolling one: what is left is the 6502 core (~15 ms) and the
+conversion of the bands that do change (~8-10 ms). Those are the next two
+targets, and the self-test cartridges plus the frame comparisons in the
+README are the guard rails for both.
