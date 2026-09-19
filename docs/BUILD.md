@@ -22,8 +22,9 @@ hold, and the joystick turns with the board — which is why the pin map in
 - Arm cross-compiler: `brew install --cask gcc-arm-embedded` (macOS) or
   `sudo apt install gcc-arm-none-eabi`
 - stlink tools: `brew install stlink` or `sudo apt install stlink-tools`
-- OpenOCD (optional, for framebuffer dumps): `brew install openocd`
-- Python 3 for the ROM generator and the host test rigs
+- OpenOCD: `brew install openocd` — needed for framebuffer dumps, for the
+  live counters (`tools/swd.py`) and for flashing while it holds the ST-Link
+- Python 3 for the ROM generator, the host test rigs and `tools/swd.py`
 
 ## Build and flash
 
@@ -36,24 +37,65 @@ The cartridge is generated and embedded automatically: `tools/make_test_rom.py`
 builds `build/test.nes` (own font, own artwork), `tools/rom2c.py` turns it
 into `src/rom_data.c`, and the linker puts it in flash next to the code.
 
-To use a different cartridge, drop an NROM (mapper 0) `.nes` image
-somewhere and point the build at it:
+To use a different cartridge, drop a `.nes` image somewhere and point the
+build at it:
 
 ```bash
-make ROM=~/roms/some-nrom-game.nes flash
+make ROM=~/roms/some-game.nes flash
+```
+
+`ROM=` accepts anything the emulator implements: **NROM** (mapper 0),
+**MMC1** (1), **UxROM** (2) and **MMC3** (4), with CHR ROM or CHR RAM.
+
+## Pixel formats
+
+The panel is driven in **RGB565** by default. `make LCD_12BIT=1` builds the
+same firmware for the ST7789's **RGB444** mode: two pixels in three bytes,
+25% less traffic on the SPI wire, 4 bits per channel instead of 5/6/5. It is
+not faster on this board yet — the emulation is still the long pole — so the
+16-bit path stays the default; the numbers are in
+[docs/PERFORMANCE.md](PERFORMANCE.md).
+
+```bash
+make LCD_12BIT=1          # RGB444 firmware
+make LCD_12BIT=1 flash
 ```
 
 ## Tests
 
 ```bash
-make host-test    # 6502 core unit tests (19 checks), run on the PC
-make host-rom     # run the emulator on the PC, render frames to a PNG
-make rom          # just regenerate the self-test cartridge
+make host-test      # 6502 core unit tests (19 checks), run on the PC
+make host-ppu-test  # background expansion tables vs the old loop, exhaustively
+make host-rom       # run the emulator on the PC, render frames to a PNG
+make rom            # just regenerate the self-test cartridge
 ```
 
-`make host-rom` writes `build/frame.raw` (256×240 NES colour indices)
-and converts it to `build/frame.png` with the NES palette — useful to see
-what the emulator *should* be showing.
+`make host-rom` writes `build/frame.raw` (256×240 NES colour indices) and
+converts it to `build/frame.png` with the NES palette — useful to see what the
+emulator *should* be showing. It also prints a checksum of the frame and the
+cartridge's own result bytes from RAM `$0300`-`$030F`, which is how the board
+and the PC are compared.
+
+The same generator makes the other two self-test cartridges; each leaves its
+verdict in console RAM, and `$030F` = `3F` means all six MMC3 checks passed:
+
+```bash
+python3 tools/make_test_rom.py --mmc1   # build/mmc1.nes
+python3 tools/make_test_rom.py --mmc3   # build/mmc3.nes
+make ROM=build/mmc3.nes flash
+```
+
+`tools/mmc3_result.c` runs that cartridge on the host and prints the byte
+(the compile line is in the file's header); on the board, read `$030F` out of
+console RAM over SWD.
+
+For any change to the 6502 core, the differential harness builds the core from
+a git revision and runs random instruction streams through both it and the
+working tree's core, comparing state hashes:
+
+```bash
+tools/diff_run.sh 5000000 HEAD      # 5 M instructions, must be identical
+```
 
 ## Verifying the board
 
@@ -78,9 +120,36 @@ print(sum(1 for a,b in zip(hw,ho) if a != b), "differing pixels of", len(hw))
 EOF
 ```
 
-A locked frame shows a few hundred differing pixels (animated sprites
-depend on the exact moment of the OAM DMA); a one-frame misalignment
-already shows ~2500, i.e. ~4%.
+A locked frame shows **0 differing bytes** of 61,440 — that is the pass mark
+every cartridge in the README's table meets — and a one-frame misalignment
+already shows ~2500 differing pixels, i.e. ~4%.
+
+The firmware can also be interrogated while it runs, which is usually faster
+than dumping a frame. `tools/swd.py` reads the counters and the boot
+self-checks over OpenOCD's telnet port:
+
+```bash
+python3 tools/swd.py read           # one sample
+python3 tools/swd.py budget 5       # per-frame breakdown over a 5 s window
+python3 tools/swd.py track 300 600  # the same counters at given emulated frames
+python3 tools/swd.py stats 10 1     # mean/min/max over ten samples
+python3 tools/swd.py watch 30       # a sample every 2 s
+```
+
+Among the counters are the display path's own boot self-checks:
+`dbg_lcd_conv_ok` (the colour conversion matches bytes worked out by hand),
+`dbg_lcd_band_ok` (the fast band-skip decision agrees with an obvious
+byte-wise one), `dbg_lcd_invariant_ok` (every skipped band still matches what
+the panel was last given) and `dbg_lcd_readback_ok` (0 on this shield, whose
+panel SDO is not wired back).
+
+Flashing while OpenOCD is attached needs `tools/ocd_flash.sh`: `st-flash`
+cannot open the ST-Link that OpenOCD holds, and with its output piped it
+fails quietly rather than loudly.
+
+```bash
+tools/ocd_flash.sh emu.bin          # reset halt, write, verify, reset run
+```
 
 ## Reloading without a debugger
 

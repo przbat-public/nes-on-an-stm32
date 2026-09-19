@@ -43,7 +43,8 @@
 #include "hal.h"
 #include "nes.h"
 
-#define START_HOLD 12           /* ~0.7 s at this emulator's frame rate */
+#define START_HOLD 12           /* ~0.25 s at the speeds this reaches now,
+                                 * ~0.7 s back when it ran at 17 fps */
 
 typedef struct { uint8_t port; uint8_t pin; uint8_t bit; } pin_t;
 

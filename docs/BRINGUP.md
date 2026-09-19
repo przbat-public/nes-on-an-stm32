@@ -295,9 +295,10 @@ Then the debugging, which taught two lessons in one evening:
    compared with the gameplay ones. *Instrument before believing your
    hypothesis.*
 2. That left the IRQ untested by any cartridge on hand, which is how the
-   project's third test cartridge was born (`make mmc3` → an MMC3
-   self-test ROM that checks 8 KB PRG banking, 1 KB and 2 KB CHR
-   banking, both mirroring registers and the IRQ). Writing it found three
+   project's third test cartridge was born (`python3 tools/make_test_rom.py
+   --mmc3` → `build/mmc3.nes`, an MMC3 self-test ROM that checks 8 KB PRG
+   banking, 1 KB and 2 KB CHR banking, both mirroring registers and the
+   IRQ). Writing it found three
    bugs — all in the test cartridge, not the emulator:
    - it never executed `CLI`, so the emulated CPU had interrupts masked
      and the handler could not run. `cpu_irq()` now *reports* whether it
@@ -329,3 +330,194 @@ and the game runs at the same 17 fps as the NROM cartridge did.
 the features you *think* it needs are not always the ones it uses. Keep a
 test ROM for the features nothing else exercises — and remember that the
 bug is as likely to be in the test as in the emulator.
+
+## 14. The frame budget that did not add up
+
+The first per-frame measurement on a real game produced a ghost: 16 ms of a
+frame appeared in **no** counter, and the PPU looked like the cheapest thing
+in it.
+
+Two mistakes had stacked up:
+
+* the counters in `.bss` accumulated **since boot**, while `dbg_cyc_frame`
+  was a snapshot of the last frame; I compared the two directly, so the
+  numbers I was reading as "per frame" were really "since reset";
+* the 84,000-cycle PPU figure I trusted had been recorded from an older
+  build and an older, mostly static scene. On Prince of Persia the renderer
+  was costing **1.7–2.0 million cycles** a frame — the largest item in the
+  frame, with the background renderer alone at 42% of the frame and the
+  whole PPU at 46%, not the smallest.
+
+**Fix:** every counter is published once per frame, at the frame boundary
+(`lcd_dbg_frame()`, `ppu_dbg_frame()`, the end of `nes_run_frame()`), so one
+SWD read is one complete frame and nothing has to be differenced. The two
+stretches of the loop that had no counter at all — the display hook and the
+per-line bookkeeping around it — got one (`dbg_cyc_hook`, `dbg_cyc_loop`),
+and the hook was split into copy / change check / DMA wait / conversion /
+window setup. The budget then closed to 0.5% (0.13 ms unaccounted).
+
+**Lesson:** a number in a table is a claim about *where and when* it was
+measured. Before hunting a 16 ms ghost, check that the counters being added
+cover the same interval — and that a figure copied from an earlier run is
+still talking about the same scene.
+
+## 15. The register cache that helped the host and not the board
+
+The 6502 core cost 126 host cycles per emulated instruction, so I
+restructured it to run a batch of instructions against cached registers
+(`reg_pc`, `reg_a`, …, `exec_one()` inlined into `cpu_run()`, the `cpu`
+struct synced only at batch boundaries). On the host that was worth ~11% of
+the core and ~5% of a frame, it passed all 19 CPU checks and 0 differing
+pixels on the NROM and MMC3 cartridges, and a differential harness ran 11.6
+million random instructions through both cores with identical state hashes.
+
+On the board it was worth nothing: **131 host cycles per emulated
+instruction against 126 before** — noise.
+
+What it actually was: the cached registers were file-scope *statics*. A C
+compiler may not keep a static object in a register across a memory access
+it cannot prove does not alias it, and the core's bus reads and writes go to
+arbitrary addresses, so GCC spilled and reloaded all six around every one.
+The host build got away with it — different compiler, different register
+pressure — the ARM one did not.
+
+**Fix:** true automatic variables inside `cpu_run()` — `pc` and `a` in ARM
+registers, `x`/`y`/`p` packed into one word — with the bus accessors,
+addressing modes, stack ops and ALU helpers reaching them as *macros*
+defined inside the function. `tools/gen_6502.py` therefore emits the whole
+dispatch loop into `cpu_ops.h`, `#include`d inside `cpu_run()` (a `#include`
+cannot live inside a macro body, as both compilers pointed out). 102 host
+cycles per instruction; 14.8 ms of core per frame down to 9.7 ms. The
+disassembly is the evidence: `cpu` is touched once in the prologue and once
+in the epilogue, and the loop body keeps the state in registers with no
+loads or stores to the struct.
+
+**Lesson:** "static" and "local" are not interchangeable storage classes
+when the compiler cannot prove what aliases what, and a win on the host is a
+hypothesis about the board until it is measured there. Keep the differential
+harness from the failed attempt — it is what made the successful one safe to
+try.
+
+## 16. The colour that no frame comparison could see
+
+This one had no symptom: nothing on the panel looked wrong and the
+frame-for-frame guards were clean. It was caught by checking the table
+against the rule it was supposed to implement, not by anything failing.
+
+Pixel value 0 in the background does not mean "palette entry 0". It means
+the **universal backdrop** at `$3F00`; the colour a cartridge writes to
+`$3F04`/`$3F08`/`$3F0C` is never displayed. The new expansion table — which
+packs the two pattern bitplanes into one 2-bit-per-pixel word and expands
+them through a per-palette lookup — was built with each palette's own entry
+0 for pixel value 0. On a cartridge that writes different colours to the
+four backdrop entries, part of the screen would have shown the wrong colour.
+
+Why every guard missed it: the frame comparisons run the *same* emulator
+sources on both sides, and all three self-test cartridges — and Prince of
+Persia at the moment it was compared — write the same colour to
+`$3F00`/`$3F04`/`$3F08`/`$3F0C`. The wrong entry and the right one are the
+same byte, so the comparison had nothing to disagree about. A differential
+test cannot see a bug both sides share, and it cannot see a difference the
+test data never contains.
+
+**Fix:** `tools/ppu_expand_test.c` (`make host-ppu-test`) compares the tables
+against the old per-pixel loop exhaustively — every (lo, hi) pattern-byte
+pair, all four palettes, with palette RAM seeded so that no two entries
+coincide. The buggy table fails 176,925 of 262,144 checks; the fixed one
+fails none.
+
+**Lesson:** when the new code is a faster spelling of an old loop, keep the
+old loop in a test and enumerate the *whole* input space — 256×256 pairs is
+cheap, and it is the only thing that would have caught this before a
+cartridge did.
+
+## 17. The striped dungeon (a skip that compared the wrong band)
+
+The report: horizontal stripes in the lower, static part of a Prince of
+Persia dungeon, looking like copies of the band above them. The framebuffer
+was correct — dumping it over SWD showed the right picture — so the bug was
+in the display path, not in the emulator.
+
+The code skipped a band that had not changed, and decided with `band_xor`:
+an OR of `(scanline ^ shadow)` accumulated by the per-line copies, where the
+shadow `sent[]` was **one band** (1 KB) that every push overwrote. The
+question it really answered was "is this band identical to the band *above*
+it (the last one pushed)?", not "is it identical to what the panel holds at
+this position". In a static region neighbouring bands are equal, so a band
+the panel had never been given was judged unchanged, skipped, and the panel
+kept older content — permanently. The boot check compared against the same
+wrong shadow, so it agreed with itself and never fired.
+
+The obvious fix — keep a real 61,440-byte shadow of the panel — does not
+fit. The framebuffer is 60 KB of SRAM1, the mappers' work RAM and CHR RAM
+are another 16 KB, and a second full frame needs 146 KB of a 128 KB part: it
+does not link at any `-O` level.
+
+**Fix:** the shadow is not needed, because at the moment a band is *started*
+the framebuffer still holds exactly what the panel holds — the previous
+frame ended with the two in step, and the fps overlay writes both together.
+`lcd_nes_line_target()` snapshots those four rows into `held[]` just before
+the renderer overwrites them, and `push_band()` sends the band if and only
+if it differs from `held[]`, exactly, word-wise. `band_xor` and `sent[]` are
+deleted rather than demoted, so there is no second mechanism left to
+disagree with. The snapshot plus the exact comparison costs 1.67 ms a frame
+(0.52 + 1.16) against 1.97 ms for the two passes it replaced — and the frame
+still got ~4.5 ms **faster**, because the old rule was sending 49 of 60
+bands in frames where nothing had changed.
+
+**Lesson:** a shadow is only a shadow of the thing you compare it against.
+"The panel holds this" and "the band above looked like this" are different
+claims; the code answered the second and was used as the first. Deleting the
+heuristic instead of tuning it is what made the failure impossible rather
+than unlikely.
+
+## 18. The panel that cannot be read back
+
+The obvious way to prove a display-path fix is to ask the panel what it is
+holding. The ST7789 has a memory-read command for exactly that (0x2E,
+RAMRD) and the firmware implements it (`lcd_readback_check()`). On this
+shield it never works, and finding that out cost less than trusting it
+would have.
+
+Measured, not assumed: `dbg_lcd_readback_probe` is **0** — a four-pixel
+pattern written into the left black bar and clocked back at 40, 10, 2.5 and
+0.31 MHz, at both possible byte alignments, never matches; what comes back
+is a 3-byte periodic pattern that differs between two reads of *identical*
+content. `hal_miso_probe()` then sampled PA6 as a GPIO input: high with the
+STM32's internal pull-up (26–28 samples of 32), low with the pull-down (6 of
+32). The line follows the pull, so nothing is driving it — the shield does
+not connect the panel's SDO to MISO. `dbg_lcd_readback_ok` stays 0, which is
+the honest answer on this board; the path stays compiled in because it is
+the right check on a board where SDO *is* wired.
+
+So the proof had to come from the firmware side, and it needed two
+instruments:
+
+* **a referee**: one 32-bit fingerprint per band of the content last handed
+  to the panel, and every band that is *skipped* must still match its
+  fingerprint. A wrong reference makes a changed band look unchanged and
+  lands here with probability 1 − 2⁻³² per band. This is what the boot check
+  should have been all along — it had compared the decision against the same
+  wrong shadow and agreed with it;
+* **a stress test**, driven over SWD (`dbg_lcd_stress`, a frame budget):
+  each frame it paints a known 48×4 block into a band of the lower half *and
+  pushes it to the panel*, so the panel really holds the artificial content;
+  the emulator's next frame must send that band back, and
+  `dbg_lcd_stress_missed` counts the ones that were not.
+
+Same detector, two builds, Prince of Persia on the board:
+
+| check | old rule (band vs the band above) | this build |
+|---|---|---|
+| injected bands not sent back | 1,033 of 1,200 | **0** of 900, and 0 of 2,500 in a longer run |
+| skip decisions judged bad | 55,524 of 57,943 | **0** of 135,897 |
+
+That is the bug reproduced, and the fix confirmed, without a human looking
+at the panel: with the old rule 86–96% of the bands that provably changed
+were never sent, which is what the stripes were.
+
+**Lesson:** when the hardware cannot answer a question, build the answer out
+of two independent instruments — one that judges every decision against a
+record it cannot have influenced (the referee), and one that forces the
+failure condition and requires recovery (the stress test). "It looks right
+now" is not a measurement; 900 injections with 0 missed is.

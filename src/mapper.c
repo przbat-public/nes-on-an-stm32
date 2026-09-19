@@ -1,5 +1,5 @@
 /*
- * mapper.c — NROM, MMC1 and MMC3.
+ * mapper.c — NROM, MMC1, UxROM and MMC3.
  *
  * MMC1 details worth remembering:
  *   - writes to $8000-$FFFF are serial: five writes, bit 0 each time,

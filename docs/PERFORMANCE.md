@@ -1,8 +1,31 @@
-# Performance — where the 54 ms of a frame go
+# Performance — where a frame goes
 
-Measured on the board with the DWT cycle counter (80 MHz), running the
-self-test cartridge. Numbers are host cycles per emulated NES frame
-(29,780 emulated CPU cycles):
+Everything below was measured on the board with the DWT cycle counter
+(80 MHz), read over SWD while the emulator runs. **Prince of Persia (UxROM)
+is the reference cartridge**: its attract mode changes scene every few
+hundred frames, so two builds are compared at the same *emulated frame
+numbers* (`python3 tools/swd.py track`), never just "after boot".
+
+The arc, light scene / heavy scene on that cartridge:
+
+| what landed | light scene | heavy scene |
+|---|---|---|
+| the first proper per-frame budget | 46.5 ms (21 fps) | 55 ms (18 fps) |
+| the background renderer rewritten | 28.4 ms (35 fps) | 37.7 ms (26 fps) |
+| bands double-buffered, PPU rendering into the framebuffer | 25.2 ms (39.7 fps) | 33.1 ms (30 fps) |
+| the exact band comparison (current build) | 20.3–21.0 ms (47–48 fps) | 33 ms (30 fps) |
+
+The display link is the wall: 122,880 bytes a frame at 40 MHz SPI is
+**24.6 ms** of wire time (18.4 ms in the optional 12-bit mode), so this link
+cannot go much past ~45 fps (54 at 12 bits) whatever the emulation costs.
+What each step cost and bought follows in the order it happened.
+
+## The first budget (self-test cartridge)
+
+Numbers are host cycles per emulated NES frame (29,780 emulated CPU cycles),
+from the era before the counters were published at the frame boundary — the
+totals and the frame rates held up, the split did not (see *The frame,
+closed*):
 
 | Phase | Before optimisation | After | Share now |
 |---|---|---|---|
@@ -12,9 +35,10 @@ self-test cartridge. Numbers are host cycles per emulated NES frame
 | Frame overhead, DMA waits | ~410,000 (5.1 ms) | ~430,000 (5.4 ms) | 9% |
 | **Total** | **5,462,000 (68 ms) → 14.6 fps** | **4,351,000 (54 ms) → 18.4 fps** | |
 
-The SPI wire time (61,440 bytes at 40 MHz = 12.3 ms) is **not** in the
-table because it is overlapped: each band is transmitted while the next
-one is being emulated.
+The SPI wire time (122,880 bytes at 40 MHz = 24.6 ms) is **not** in the
+table because it is overlapped: each band is transmitted while the next one
+is being emulated. It also cannot be overlapped with itself, which is the
+ceiling discussed under *Why not 60 fps*.
 
 ## What was optimised
 
@@ -41,104 +65,118 @@ one is being emulated.
    two pattern fetches through a function pointer.
    → PPU rendering 35% faster in total.
 
-## What is left
+## What was left, and what happened to it
 
-- **CPU (37%)**: the test cartridge spends most of its time polling
-  `$2002` (waiting for vblank), which currently walks
-  `bus_read → nes_bus_read_slow → ppu_read_reg → switch`. A fast inline
-  path for `$2002` would cut a few hundred thousand cycles per frame.
-  A jump-table-free opcode dispatch (computed goto / 256 direct cases)
-  is another option.
-- **PPU (39%)**: the background loop is already close to one store per
-  pixel; the remaining cost is bit extraction. Rendering 8 pixels at a
-  time from a 256-entry lookup table per pattern byte pair would help.
-- **Band conversion (15%)**: 61,440 palette lookups with two byte stores
-  each. Storing 16 bits at a time (as one `uint16_t` write) would halve
-  the stores.
-- **A second staging buffer is impossible** (one DMA channel), but a
-  larger band (16 lines) would reduce the per-band overhead.
-
-Realistic target with the above: **25–30 fps**.
+- **A fast `$2002` path** (the CPU's 37% in that table) was never taken: the
+  polling read still walks `bus_read → nes_bus_read_slow → ppu_read_reg`.
+  What moved the core instead was the register work described under *The
+  macro version* below.
+- **The PPU loop** was rewritten exactly as sketched here: eight pixels at a
+  time out of prebuilt tables, with the two pattern bitplanes packed into
+  one 2-bit-per-pixel word first.
+  → background 19.6 ms → 8.2 ms a frame.
+- **The band conversion** now stores 16-bit values four pixels at a time,
+  through a palette table indexed by the raw framebuffer byte.
+  → 3.94 ms → 3.37 ms.
+- **"A second staging buffer is impossible"** was true of the *DMA* (one
+  channel feeds `SPI1_TX`), not of the CPU: the firmware now alternates two
+  staging buffers and converts the next band while the previous one is still
+  on the wire, with 4-line bands so the pair costs the same RAM as the one
+  8-line buffer it replaced.
+- **The 25–30 fps target** was passed: 47–48 fps in the light scenes, 30 in
+  the heavy ones, against the ~45 fps the display link allows (see the top
+  of this document).
 
 ## Why not 60 fps
 
 Two hard limits:
 
-1. The display link: 61,440 bytes at 40 MHz SPI = 12.3 ms per frame, and
-   it cannot be overlapped with itself. That caps a full-screen update at
-   ~80 fps in theory, but any real rendering on top brings it down.
-2. The 80 MHz CPU has ~1.33 million cycles per 60 Hz frame. Emulating a
+1. **The display link.** 61,440 pixels × 2 bytes at 40 MHz SPI is 24.6 ms of
+   wire time per frame, and it cannot be overlapped with itself. A
+   full-screen update therefore tops out at ~40 fps in theory — ~54 fps in
+   the 12-bit mode — and skipping unchanged bands is what brings the
+   measured ceiling to roughly 45 fps. The STM32L4 cannot clock SPI1 faster
+   than f_PCLK/2 = 40 MHz, so this is the end of that road.
+2. **The 80 MHz CPU** has ~1.33 million cycles per 60 Hz frame. Emulating a
    6502 plus a scanline PPU in that budget is possible only with heavy
    optimisation (the classic approach is even/odd frame rendering or a
    smaller internal resolution).
 
-30 fps — the speed many PAL NES owners remember anyway — is the sensible
-target, and it is within reach of the optimisations listed above.
+30 fps — the speed many PAL NES owners remember anyway — is now the *heavy*
+scene's rate, and the light scenes are past it. 60 fps is not a target this
+display link can meet.
 
 ## Measuring it yourself
 
-The firmware keeps four counters readable over SWD while it runs:
+Every counter in `.bss` is published once per frame, at the frame boundary,
+so one SWD read is one complete frame — no differencing, no "since boot"
+numbers. `tools/swd.py` reads them through openocd's telnet port:
 
 ```bash
-# SWD addresses come from the map file
-grep -E "dbg_cyc_(cpu|ppu|flush|frame)" emu.map
+python3 tools/swd.py read          # one sample
+python3 tools/swd.py budget 5      # per-frame breakdown over a 5 s window
+python3 tools/swd.py track 300 600 # the counters at given emulated frames
+python3 tools/swd.py stats 10 1    # mean/min/max over ten samples
+python3 tools/swd.py watch 30      # a sample every 2 s
+python3 tools/swd.py list          # symbol -> address, from emu.map
 ```
 
-plus `dbg_frames` (frames rendered) and `dbg_fps` (the rate the firmware
-itself measures from the cycle counter), which is also printed in the
-top-left corner of the picture for the first few seconds after boot.
+`dbg_fps` (the rate the firmware measures from its own cycle counter) is also
+printed in the top-left corner of the picture for the first few seconds after
+boot. To flash a new build while openocd is holding the ST-Link, see
+*Flashing while openocd is running* below.
 
 ## Measured again, on the board (Prince of Persia, UxROM)
 
-Counters are the DWT cycle counter at 80 MHz, read over SWD while the game
-runs; `dbg_cyc_*` in `.bss` carries them.
+This was the first per-frame measurement on a real game, and one of its
+numbers was wrong. The `dbg_cyc_cpu` and `dbg_cyc_flush` rows held up; the
+PPU row did not: 83,881 cycles (1.0 ms) had been carried over from an older
+build and an older, mostly static scene. Frame-aligned on this cartridge the
+renderer was really costing 1.7–2.0 million cycles — the largest item in the
+frame. The "16 ms that appears in no counter" below is the same mistake seen
+from the other side, and *The frame, closed* is how it was tracked down.
 
 | stage | cycles | time |
 |---|---|---|
 | 6502 core (`dbg_cyc_cpu`) | 1 447 077 | 18.1 ms |
-| PPU scanline renderer (`dbg_cyc_ppu`) | 83 881 | 1.0 ms |
+| PPU scanline renderer (`dbg_cyc_ppu`) | 83 881 | 1.0 ms ← the wrong figure, see above |
 | band conversion + staging (`dbg_cyc_flush`) | 1 192 137 | 14.9 ms |
 
-Two things follow from that, and one of them is a hard ceiling:
+One thing in that picture was right, and it is a hard ceiling: **the display
+link is a floor.** A frame is 61,440 pixels = 122,880 bytes over SPI at
+40 MHz = **24.6 ms of wire time**, no matter how fast the emulation gets.
+The other thing it suggested — that ~15 ms a frame was being spent *after*
+`nes_run_frame()` waiting for the last band — was an artefact of the same bad
+premise: the DMA wait turned out to be 0.02 ms, because the transfer hides
+behind the emulation (see *The frame, closed*).
 
-1. **The display link is a floor.** A frame is 61,440 pixels = 122,880 bytes
-   over SPI at 40 MHz = **24.6 ms of wire time**, no matter how fast the
-   emulation gets. 30 fps means a 33 ms budget, so emulation plus
-   conversion has to fit in ~8 ms — that is a different class of work than
-   the current 33 ms.
-2. **The rest of the frame is outside `nes_run_frame()`**: `dbg_cyc_frame`
-   is measured inside the frame loop, and a 20 fps game spends roughly
-   15 ms per frame after it returns — mostly `lcd_nes_frame_end()` waiting
-   for the last band to leave the wire, plus the per-frame bookkeeping.
-   That wait is what the band skipping below attacks.
-
-What was already cut: the band conversion now swaps bytes in the palette
+What was already cut by then: the band conversion swaps bytes in the palette
 once at boot (`pal_sw[]`) and writes 16-bit values four pixels at a time,
 instead of two 8-bit stores per pixel with a shift each. Prince of Persia
-went from 20 to 22 fps, and `lcd_conv_selfcheck()` verifies the byte order
-at every boot against bytes worked out from the NES palette by hand
+went from 20 to 22 fps, and `lcd_conv_selfcheck()` verifies the byte order at
+every boot against bytes worked out from the NES palette by hand
 (`dbg_lcd_conv_ok`), because a wrong byte order here would show up only as
 wrong colours on the panel.
 
 ## Bands that did not change are not sent
 
-`push_band()` keeps a copy of what the panel was last given and skips a
-band whose 1 KB is identical: no conversion, no SPI traffic. On Prince of
-Persia about a fifth to a quarter of the bands are skipped
-(`dbg_bands_sent` / `dbg_bands_skipped` in `.bss`, read over SWD), which
-matters twice — the conversion costs CPU time *and* the transfer costs
-wire time, and the wire is the ceiling the section above describes.
+From the second frame on, a band is converted and sent only if it differs
+from what the panel holds: no conversion, no SPI traffic. That matters twice
+— the conversion costs CPU time *and* the transfer costs wire time, and the
+wire is the ceiling described above.
 
-**The first version of that test was wrong** and produced horizontal
-stripes on the panel; it is described, with the fix and the proof, at the
-end of this document ("The stripes").
+The panel cannot be asked what it holds (story 18 in
+[docs/BRINGUP.md](BRINGUP.md)), so the firmware snapshots each band into
+`held[]` just before the renderer overwrites those framebuffer rows — at that
+instant the framebuffer *is* what the panel holds — and `push_band()`
+compares the 1 KB band against it, exactly, word-wise. Snapshot plus
+comparison is 1.67 ms a frame (0.52 + 1.16) against the 1.97 ms of the two
+passes it replaced, and it *saves* several milliseconds more on a static
+screen, because bands the old heuristic would have sent are not sent at all.
 
-The frame rate on that cartridge stays in the 19-22 fps range either way,
-so the honest headline is that this change helps static screens and does
-not rescue a scrolling one: what is left is the 6502 core (~15 ms) and the
-conversion of the bands that do change (~8-10 ms). Those are the next two
-targets, and the self-test cartridges plus the frame comparisons in the
-README are the guard rails for both.
+**The first version of that test was wrong** and produced horizontal stripes
+on the panel; the story is in [docs/BRINGUP.md](BRINGUP.md) (17), and the
+before/after with the proof is in *The stripes* at the end of this document.
 
 ## What the 6502 core actually costs per instruction
 
@@ -169,6 +207,11 @@ against those locals, and write them back at the end (and in `cpu_nmi()` /
 `cpu_irq()`, which change them from outside). That is a mechanical change
 across `cpu6502.c` and the generated `cpu_ops.h`, guarded by the 19 CPU
 tests and the pixel-for-pixel frame comparisons the project already has.
+
+The two sections that follow are what happened when that was tried: first
+with the locals as file-scope *statics* (worth nothing on the board), then as
+true automatic variables (126 → 102 host cycles per instruction). Story 15
+in [docs/BRINGUP.md](BRINGUP.md) tells the same thing as a war story.
 
 **Ceiling, for the record:** 122,880 bytes per frame at 40 MHz SPI is
 24.6 ms of wire time. Even with a free CPU that is ~40 fps; 30 fps (33 ms)
@@ -390,11 +433,53 @@ across runs of both builds.)
 
 `dbg_cyc_cpu` is now the largest single item — 9.6 ms in a light scene,
 13.5-14.2 ms in a heavy one — at ~82-84 host cycles per emulated
-instruction. Past that the wall is the display link again: 25
+instruction in this window. Past that the wall is the display link again: 25
 bands × 4 KB at 40 MHz is 20.5 ms of wire time a frame, so even with free
 emulation this build cannot go much past ~45 fps. `dbg_cyc_wait` (2.5 ms)
 is already the emulation running out of work rather than the transfer
 being late.
+
+### The last full window
+
+A 5 s `tools/swd.py budget` window on the board (Prince of Persia, 16-bit,
+80 MHz). These are the counters of the build just before the exact band
+comparison — the `copy` and `difference` rows are the "before" column of
+*The stripes* below, which replaced them with 0.52 + 1.16 ms. The sub-parts
+are as the firmware reports them and do not sum to the hook exactly; the
+remainder is the band loop's own bookkeeping.
+
+| part | ms/frame |
+|---|---|
+| `dbg_cyc_cpu` | 9.85 |
+| `dbg_cyc_ppu` | 8.04 |
+| — background tiles (`dbg_cyc_bg`) | 7.61 |
+| — backdrop fill (`dbg_cyc_fill`) | 0.07 |
+| — sprites (`dbg_cyc_spr`) | 0.08 |
+| `dbg_cyc_hook` (the display) | 6.48 |
+| — band snapshot (`dbg_cyc_copy`) | 1.47 |
+| — the skip decision (`dbg_cyc_diff`) | 0.50 |
+| — DMA wait (`dbg_cyc_wait`) | 0.15 |
+| — conversion (`dbg_cyc_conv`) | 3.61 |
+| — window setup (`dbg_cyc_setwin`) | 0.49 |
+
+`dbg_cyc_wait` at 0.15 ms against 3.61 ms of conversion is the point of the
+double buffering: the transfer is hidden behind the emulation, and the
+conversion is the CPU work that is left. `dbg_cyc_cpu` is still the largest
+single item. Frame-aligned on the current build the light scene is 20.3–21.0
+ms (47–48 fps); this window mixes attract-mode scenes, which is why its
+counters sit above the light-scene figures.
+
+### Measured and dropped
+
+Worth recording as method — each of these was measured on the board with the
+counters above, and each was left out:
+
+| change | result |
+|---|---|
+| `-O3` instead of `-O2` | ~3% **slower** |
+| `-Os` instead of `-O2` | ~20% slower |
+| unrolling the change check to 16 pixels | noise, no gain |
+| removing the backdrop fill on its own | a wash — until the two edge tiles were expanded through `pair[]` as well, which turned it into 0.63 ms → 0.07 ms |
 
 ### The guard rails that were run
 
@@ -408,7 +493,7 @@ being late.
 | `make host-rom ROM=build/mmc1.nes FRAMES=60` | 0 differing bytes (checksum BCD8C7DC) |
 | MMC3 self-test, `$030F` (host and on the board) | 3F, PASS |
 | `dbg_lcd_conv_ok` after boot | 1 |
-| `dbg_lcd_band_ok` after boot | 1 (240 bands checked) |
+| `dbg_lcd_band_ok` after boot | 1 (240 bands: that build still had 8-line bands; today's check covers 480) |
 | `tools/diff_run.sh 5000000 HEAD` | 5,000,105 instructions, identical state hashes |
 
 (The 6502 core itself was not touched; the differential core harness was
@@ -571,5 +656,37 @@ were not sent, which is what the stripes were.
 
 (The three reference frames were captured from a pristine `git archive
 HEAD` checkout before any change, and the three cartridges are regenerated
-byte-identically by `tools/make_test_rom.py`; the on-disk `build/ref/` was
-gone, so the references live in `/tmp/ref-*.raw` for this session.)
+byte-identically by `tools/make_test_rom.py`; `build/ref/` is not committed,
+and the references were kept in `/tmp` for that session.)
+
+## The 12-bit panel mode
+
+`make LCD_12BIT=1` builds the display path for the ST7789's RGB444 mode
+(COLMOD 0x53): two pixels in three bytes, six nibbles in the order
+p0.R, p0.G, p0.B, p1.R, p1.G, p1.B, each channel quantised by *rounding to
+nearest*. That is the right inverse of the way the panel expands a nibble
+back to six bits, and it halves the worst-case channel error against
+truncation (8/255 against 13/255). The format is chosen at compile time; the
+default is the 16-bit path, and for now it stays the default.
+
+It is **not a win yet**. Measured on the board, the 12-bit build is 1.0–1.2%
+*slower* than the 16-bit one on the same cartridge: the frame's CPU work
+(~25 ms) is still above the wire time of the 12-bit frame it was measured in
+(15.4 ms; a full 12-bit frame would be 18.4 ms), so shaving the wire does not
+shorten the frame — and the packing costs more conversion than it saves (one
+32-bit store per two pixels, but two table lookups and a 3-byte stride
+instead of two 16-bit stores).
+
+The ceiling is worth stating anyway, because it is a property of the link and
+not of this build: 122,880 bytes a frame at 40 MHz is 24.6 ms of wire (18.4 ms
+at 12 bits), so this display tops out near **45 fps (54 at 12 bits)** whatever
+the emulation costs. The 12-bit mode becomes interesting when the emulation
+fits inside its wire time — roughly, when the CPU work drops below 15 ms —
+and it costs 4 bits per channel instead of 5/6/5.
+
+The mode carries its own boot self-check (`lcd_conv_selfcheck()`, reported in
+`dbg_lcd_conv_ok` and `dbg_lcd_conv_checks`): six hand-worked bytes for four
+pixels — so the middle byte, which holds two different pixels' nibbles, is
+exercised — plus all 64 palette entries against an independently written
+rounding expression. Both ARM builds (`make` and `make LCD_12BIT=1`) are
+warning-free.

@@ -8,8 +8,9 @@
  *                           113.67 cycles per line, the PPU renders the
  *                           visible ones, NMI fires on vblank
  *
- * Only mapper 0 (NROM) is implemented so far — that already covers a lot
- * of early cartridges, including the original platformers.
+ * Mappers 0 (NROM), 1 (MMC1), 2 (UxROM) and 4 (MMC3) are implemented —
+ * between them a large part of the library, from the early platformers to
+ * the late bank-switching cartridges.
  */
 #include "nes.h"
 #include "cpu6502.h"

@@ -34,6 +34,17 @@ static void show_boot_text(const char *l1, const char *l2)
     lcd_push_full();
 }
 
+static const char *mapper_name(int m)
+{
+    switch (m) {
+    case 0:  return "NROM";
+    case 1:  return "MMC1";
+    case 2:  return "UXROM";
+    case 4:  return "MMC3";
+    default: return "UNKNOWN MAPPER";
+    }
+}
+
 int main(void)
 {
     system_init();
@@ -48,8 +59,7 @@ int main(void)
         for (;;) {}
     }
 
-    show_boot_text("NES ON STM32L476RG",
-                   "STARTING... (MAPPER 0, NROM)");
+    show_boot_text("NES ON STM32L476RG", mapper_name(nes_mapper));
 
     nes_line_hook = lcd_nes_line;
     nes_line_target = lcd_nes_line_target;   /* render straight into fb */
