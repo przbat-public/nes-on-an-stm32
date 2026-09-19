@@ -29,10 +29,8 @@ uint8_t nes_ram_2k[0x800];         /* 2 KB console RAM (see nesmem.h) */
 static uint8_t  wram[0x2000];      /* 8 KB cartridge work RAM         */
 static uint8_t  chr_ram[0x2000];   /* used when the cart has CHR-RAM  */
 
-const uint8_t *nes_prg_lo = 0;
-const uint8_t *nes_prg_hi = 0;
-const uint8_t *nes_chr_lo = 0;
-const uint8_t *nes_chr_hi = 0;
+const uint8_t *nes_prg[4] = { 0, 0, 0, 0 };
+const uint8_t *nes_chr[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 uint8_t       *nes_chr_ram = 0;
 int            nes_chr_is_ram = 0;
 
@@ -128,8 +126,8 @@ int nes_load(const uint8_t *rom, uint32_t size)
     nes_prg_banks = prg_banks;
     nes_chr_banks = chr_banks;
 
-    if (mapper != MAPPER_NROM && mapper != MAPPER_MMC1)
-        return NES_ERR_MAPPER;           /* NROM and MMC1 for now */
+    if (mapper != MAPPER_NROM && mapper != MAPPER_MMC1 && mapper != MAPPER_MMC3)
+        return NES_ERR_MAPPER;           /* NROM, MMC1 and MMC3 for now */
 
     uint32_t need = (uint32_t)(16 + trainer + prg_banks * 16384
                                + (chr_banks ? chr_banks * 8192 : 0));
@@ -174,6 +172,7 @@ void nes_reset(void)
  * 341*y/3, which keeps the 2/3-cycle remainder exact. */
 /* phase profiling: host cycles spent emulating the CPU, rendering the
  * PPU and converting bands (readable over SWD) */
+volatile uint32_t dbg_irq_count, dbg_irq_line;
 volatile uint32_t dbg_cyc_cpu, dbg_cyc_ppu, dbg_cyc_flush, dbg_cyc_frame;
 
 #ifdef NES_PROFILING
@@ -211,6 +210,17 @@ void nes_run_frame(void)
             ppu_acc += d - c;
             if (nes_line_hook)
                 nes_line_hook(y, ppu_line);
+
+            /* one rendered line = one MMC3 scanline-counter tick; the
+             * interrupt is handed to the CPU before it runs the next
+             * line, which is where a split-screen handler wants it */
+            if (ppu_rendering_enabled()) {
+                mapper_scanline();
+                if (mapper_irq_pending() && cpu_irq()) {
+                    dbg_irq_line = (uint32_t)y;   /* when the last one hit */
+                    dbg_irq_count++;
+                }
+            }
         }
         ppu_end_scanline(y);
 

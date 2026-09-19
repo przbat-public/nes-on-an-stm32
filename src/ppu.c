@@ -420,6 +420,10 @@ void ppu_clear_sprite_flags(void)
 bool ppu_nmi_pending(void) { return nmi_pending; }
 void ppu_clear_nmi(void)   { nmi_pending = false; }
 
+/* The MMC3 scanline counter is clocked by the PPU's pattern fetches, so it
+ * only ticks while the picture is actually being drawn. */
+bool ppu_rendering_enabled(void) { return (mask & 0x18) != 0; }
+
 void ppu_reset(void)
 {
     ctrl = mask = status = read_buffer = 0;

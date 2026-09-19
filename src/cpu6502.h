@@ -7,6 +7,7 @@
  */
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 
 /* status register bits */
 #define F_C 0x01   /* carry      */
@@ -39,7 +40,9 @@ void    bus_write(uint16_t addr, uint8_t value);
 
 /* interrupts from the PPU/mapper */
 void cpu_nmi(void);
-void cpu_irq(void);
+/* returns true when the interrupt was taken; false when the I flag
+ * masked it (the request stays pending at the caller) */
+bool cpu_irq(void);
 
 void cpu_reset(void);
 int  cpu_step(void);                 /* one instruction, returns cycles used */

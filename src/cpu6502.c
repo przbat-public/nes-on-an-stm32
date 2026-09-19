@@ -244,14 +244,15 @@ static void do_nmi(void)
 
 void cpu_nmi(void) { do_nmi(); }
 
-void cpu_irq(void)
+bool cpu_irq(void)
 {
-    if (cpu.p & F_I) return;
+    if (cpu.p & F_I) return false;   /* masked: the line stays asserted */
     push16(cpu.pc);
     push((uint8_t)((cpu.p & ~F_B) | F_U));
     cpu.p |= F_I;
     cpu.pc = (uint16_t)(bus_read(0xFFFE) | (bus_read(0xFFFF) << 8));
     cpu.cycles += 7;
+    return true;
 }
 
 int cpu_step(void)

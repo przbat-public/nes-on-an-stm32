@@ -85,8 +85,11 @@ Two details that cost real performance work:
 
 Cartridges are not flat memory: games switch banks while they run. The
 mapper layer publishes **bank pointers** instead of touching the bus, and
-the inline accessors read through them, so a bank switch costs two
-pointer writes and nothing else:
+the inline accessors read through them, so a bank switch costs a few
+pointer writes and nothing else. The windows are deliberately small —
+**four 8 KB PRG windows** (`$8000`, `$A000`, `$C000`, `$E000`) and **eight
+1 KB CHR windows** — because MMC3 swaps half of what NROM and MMC1 treat
+as one unit; the index is a shift and a mask in the hot path.
 
 - **NROM** (mapper 0): pointers set once — 16 KB carts mirror the single
   bank at both `$8000` and `$C000`, 32 KB carts map straight through.
@@ -96,6 +99,20 @@ pointer writes and nothing else:
   arrangement — including the two **one-screen** modes, which is why the
   PPU has four mirroring settings rather than two — while bits 2-3 pick
   one of the four PRG banking modes and bit 4 the CHR bank size.
+- **MMC3** (mapper 4): a register file rather than a serial port. `$8000`
+  picks a register (and swaps the PRG and CHR halves), `$8001` writes it:
+  `R0`/`R1` are the 2 KB CHR banks, `R2`-`R5` the 1 KB ones, `R6`/`R7`
+  the two switchable 8 KB PRG banks — the other two always point at the
+  last banks of the cartridge, which is what keeps the reset and
+  interrupt vectors mapped. `$A000` sets the mirroring, `$A001` protects
+  the work RAM.
+- **The MMC3 scanline counter** (`$C000`-`$E001`) is the part games use to
+  split the screen: a down counter reloaded from a latch, clocked **once
+  per rendered scanline** (it is the PPU's pattern fetches that clock it,
+  so it only ticks while the picture is being drawn), raising an IRQ at
+  zero. `nes.c` clocks it after every visible line and hands the
+  interrupt to `cpu_irq()`, which honours the I flag and leaves the
+  request pending until the game acknowledges it by writing `$E000`.
 
 ## The machine (`nes.c`)
 
@@ -106,8 +123,8 @@ the emulated CPU runs far too fast), cartridge work RAM and the PRG-ROM
 window with NROM-128 mirroring.
 
 `nes_load()` parses an iNES image: PRG/CHR pointers, mirroring, mapper
-check. Only mapper 0 (NROM) is implemented so far, which covers the early
-library.
+check. Mappers 0 (NROM), 1 (MMC1) and 4 (MMC3) are implemented — between
+them a large part of the library.
 
 ## The picture path (`lcd.c` + DMA)
 

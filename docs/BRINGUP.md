@@ -265,3 +265,56 @@ walking.
 halves of a scanline engine with different reload rules per half, and a
 game that splits the screen depends on the horizontal reload happening 262
 times a frame rather than once.
+
+## 13. MMC3, and the interrupt the game never used
+
+The emulator could run homebrew NROM and MMC1 cartridges, so the next step
+was a cartridge from the commercial era: *Contra 2* (Super C), 128 KB of
+PRG and 128 KB of CHR behind an **MMC3**. Three pieces had to be built:
+bank switching, the mirroring register, and the scanline counter that
+raises an IRQ.
+
+The bank switching forced a change in the bus. NROM and MMC1 switch 16 KB
+of PRG and 4 KB (or 8 KB) of CHR at a time, so the inline accessors had
+been reading through two PRG pointers and two CHR pointers; MMC3 switches
+8 KB and 1 KB, which does not fit inside a 16 KB window. The windows are
+now four 8 KB PRG pointers and eight 1 KB CHR pointers, indexed with a
+shift and a mask. The regression test for that rework is the same one the
+project always uses: the NROM and MMC1 test cartridges render
+**pixel-identically** afterwards — 0 of 61,440 pixels differ.
+
+Then the debugging, which taught two lessons in one evening:
+
+1. With the game running, the picture was perfect but the status bar was
+   missing, so the obvious suspect was the scanline IRQ counter. Tracing
+   every MMC3 register write told a different story: the game writes the
+   IRQ latch and reloads it twice per frame, but writes `$E001` — "enable
+   the interrupt" — **zero times**. Super C splits its screen without the
+   IRQ at all. The counter was innocent, and the HUD turned out to be
+   drawn exactly where it should be once the attract-mode frames were
+   compared with the gameplay ones. *Instrument before believing your
+   hypothesis.*
+2. That left the IRQ untested by any cartridge on hand, which is how the
+   project's third test cartridge was born (`make mmc3` → an MMC3
+   self-test ROM that checks 8 KB PRG banking, 1 KB and 2 KB CHR
+   banking, both mirroring registers and the IRQ). Writing it found three
+   bugs — all in the test cartridge, not the emulator:
+   - it never executed `CLI`, so the emulated CPU had interrupts masked
+     and the handler could not run. `cpu_irq()` now *reports* whether it
+     took the interrupt, and the machine layer counts only those;
+   - it waited for the frame counter with `CMP #$04 / BNE`, which is true
+     only at exactly four — by the time the check ran the counter had
+     passed it. `BCC` ("wait until at least") was what it meant;
+   - its IRQ and NMI counters sat at `$0301`/`$0302`, right on top of the
+     PRG banking markers at `$0300`-`$0305`. The markers were still
+     "right" by luck; moving the counters to `$0310`/`$0311` fixed it.
+
+With the test cartridge passing all six checks, the real game was verified
+the same way as everything else: the board's framebuffer matches the PC
+reference **pixel for pixel** (the same SHA-256 for the AREA 1 screen),
+and the game runs at the same 17 fps as the NROM cartridge did.
+
+**Lesson:** a cartridge you own is the only test suite that matters, and
+the features you *think* it needs are not always the ones it uses. Keep a
+test ROM for the features nothing else exercises — and remember that the
+bug is as likely to be in the test as in the emulator.

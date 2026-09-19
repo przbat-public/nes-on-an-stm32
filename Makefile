@@ -39,7 +39,7 @@ rom:
 # always regenerate the embedded cartridge (it is what the ROM variable
 # points at); 'rom' rebuilds the self-test image itself
 romdata: rom
-	python3 tools/rom2c.py $(ROM) src/rom_data.c
+	python3 tools/rom2c.py "$(ROM)" src/rom_data.c
 
 # ---- firmware ----------------------------------------------------------
 $(TARGET).elf: romdata $(OBJS) src/linker.ld
@@ -68,8 +68,8 @@ host-test: build/cpu_test.h
 build/cpu_test.h: tools/cpu_test.py tools/asm6502.py tools/gen_6502.py
 	python3 tools/cpu_test.py
 
-host-rom: build/host_render $(ROM)
-	./build/host_render $(ROM) $(FRAMES) build/frame
+host-rom: build/host_render
+	./build/host_render "$(ROM)" $(FRAMES) build/frame
 	python3 tools/raw2png.py build/frame.raw build/frame.png 2
 
 build/host_render: tools/host_render.c $(HOST_SRCS) src/cpu_ops.h

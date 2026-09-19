@@ -31,6 +31,7 @@ void ppu_set_vblank(void);         /* called when entering vblank      */
 void ppu_latch_scroll(void);       /* pre-render: t -> v (scrolling)   */
 void ppu_clear_vblank(void);
 void ppu_clear_sprite_flags(void); /* pre-render: sprite 0 + overflow  */
+bool ppu_rendering_enabled(void);  /* background or sprites are on     */
 bool ppu_nmi_pending(void);
 void ppu_clear_nmi(void);
 
