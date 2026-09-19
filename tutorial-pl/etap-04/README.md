@@ -1,6 +1,6 @@
-# Etap 1: zegar, bufor obrazu i pasma
+# Etap 04: zegar, bufor obrazu i pasma
 
-W etapie 0 kolor leciał wprost na panel. Nie było pośrednika, więc nie było czego
+W etapie 00 kolor leciał wprost na panel. Nie było pośrednika, więc nie było czego
 przerysować, z czym porównać ani na czym zaoszczędzić. Ten etap wprowadza trzy rzeczy,
 na których stoi cała ścieżka obrazu w emulatorze: szybszy zegar, bufor obrazu i wysyłanie
 pasmami.
@@ -44,7 +44,7 @@ z czasem, jaki emulator potrzebuje na policenie jednej klatki.
 
 Dlatego obraz nie leci jednym kawałkiem. Dzielimy go na pasma po osiem linii, czyli
 po 4096 bajtów, i wysyłamy pasmo po paśmie. Gdy jedno pasmo jedzie po SPI, procesor
-w tym samym czasie ma wolne i może liczyć następne. W etapie 1 nie ma jeszcze czego
+w tym samym czasie ma wolne i może liczyć następne. W tym etapie nie ma jeszcze czego
 liczyć, więc pasma są tylko pokazówką mechanizmu. W etapie 4, kiedy pojawi się PPU,
 z tego czasu skorzysta emulacja i właśnie dlatego gra chodzi, zamiast czekać na ekran.
 

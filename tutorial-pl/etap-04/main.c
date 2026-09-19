@@ -1,7 +1,7 @@
 /*
- * Stage 1 — a framebuffer, a palette, and bands.
+ * Stage 4 — a framebuffer, a palette, and bands.
  *
- * Stage 0 pushed colour straight at the panel: no memory in between, so nothing
+ * Stage 00 pushed colour straight at the panel: no memory in between, so nothing
  * could be redrawn, compared or timed. This stage adds the three ideas the whole
  * display path of the emulator rests on:
  *
@@ -17,7 +17,7 @@
  *
  * The test pattern is deliberately asymmetric: colour bars plus a white marker in
  * one corner. A solid colour hides a 180-degree rotation, which is exactly the
- * mistake stage 0's exercise was meant to show you.
+ * mistake stage 00's exercise was meant to show you.
  */
 #include <stdint.h>
 
