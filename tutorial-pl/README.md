@@ -66,7 +66,20 @@ scanline, mapper), bo tłumaczenie ich na siłę utrudnia czytanie źródeł.
 ## Stan pracy
 
 - [x] research metodyki i przegląd skilli językowych
-- [ ] refaktor repozytorium pod czytelność, bez straty wydajności i RAM-u
-- [ ] kod dydaktyczny: etapy 0-12, każdy uruchamialny i sprawdzony na płytce
-- [ ] tekst rozdziałów po polsku
+- [x] refaktor repozytorium: standard stylu, `main.c`, `input.c`, `hal.c`, `font5x7`,
+      przegląd narzędzi (przyrosty 1, 2 i 4 z `docs/STYLE.md`)
+- [ ] refaktor rdzeni emulacji: `cpu6502.c`, `ppu.c`, `mapper.c` (przyrost 3,
+      komentarze i nazwy bez zmiany struktury, plik po pliku)
+- [x] etap 0: panel świeci jednym kolorem, kod i rozdział
+- [x] etap 1: zegar 80 MHz, bufor obrazu, pasma, kod i rozdział
+- [x] wspólne budowanie etapów: `make STAGE=00 flash`
+- [ ] etapy 2-12: rdzeń 6502, autobus, PPU, duszki, przerwania, pad, przewijanie,
+      mappery, MMC5, wydajność
+- [ ] sprawdzenie etapów 0 i 1 na panelu (kod kompiluje się bez ostrzeżeń, ale
+      efektu nie widziałem na własne oczy, bo płytka ma wgrane Castlevanię III)
 - [ ] redakcja językowa i przegląd całości
+
+Etapy 0 i 1 budują się jedną komendą i przechodzą `make check` bez ostrzeżeń.
+Kod każdego etapu jest samodzielny: pożycza z emulatora tylko skrypt linkera
+i plik startowy, a wszystkie rejestry deklaruje u siebie na górze, żeby czytelnik
+widział komplet w jednym pliku.
