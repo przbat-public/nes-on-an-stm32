@@ -90,10 +90,11 @@ utrudnia czytanie źródeł, ale każde pierwsze użycie ma wyjaśnienie.
 - [ ] refaktor rdzeni emulacji: `cpu6502.c`, `ppu.c`, `mapper.c` (przyrost 3,
       komentarze i nazwy bez zmiany struktury, plik po pliku)
 - [x] wspólne budowanie etapów: `make STAGE=00 flash`
-- [~] etap 00: kod istnieje, rozdział trzeba przepisać tak, żeby wprowadzał kompilator
-      i wgrywanie od zera, zamiast zakładać ich znajomość
-- [ ] etap 01: dopisać część o zmiennych, funkcjach i pętlach (kod istnieje)
-- [ ] etapy 02-15: kod i rozdziały
+- [x] etap 00: stanowisko pracy, kompilator, wgrywanie, pierwszy program
+- [x] etap 01: język na kolorach (stałe, zmienne, tablice, funkcje, pętle, warunki)
+- [x] etap 04: zegar, bufor obrazu i pasma (przeniesiony z numeru 01, gdy plan
+      przesunął język na początek)
+- [ ] etapy 02, 03 i 05-15: kod i rozdziały
 - [ ] sprawdzenie etapów na panelu (kod buduje się bez ostrzeżeń, ale efektu na panelu
       nikt jeszcze nie widział, bo płytka ma wgrane Castlevanię III)
 - [ ] redakcja językowa i przegląd całości
