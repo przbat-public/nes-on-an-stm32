@@ -172,9 +172,14 @@ the reference build).
 
 The three self-test cartridges in `tools/` cover the same ground without
 any third-party code: NROM (`make rom`), MMC1 (`--mmc1`) and MMC3
-(`--mmc3`), the last one checking 8 KB PRG banking, 1 KB and 2 KB CHR
-banking, both mirroring modes and the scanline IRQ (its result byte in RAM
-reads `$3F` — all six pass).
+(`--mmc3`). The MMC3 one checks 8 KB PRG banking, 1 KB and 2 KB CHR
+banking, both mirroring modes and the scanline IRQ, and draws its own
+verdict:
+
+![The MMC3 self-test cartridge](assets/screenshot-mmc3-test.png)
+
+*The project's own MMC3 cartridge: four checks, four passes. The same
+image on the board and on the PC.*
 
 ## The documentation
 

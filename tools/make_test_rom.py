@@ -411,8 +411,12 @@ def build_mmc1_rom(index, shape):
         L(f"JMP rd{t}")
         L(f"rf{t}:", f"LDA #${index['0']:02X}")
         L(f"rd{t}:", "PHA")
-        L(f"LDA #${0x20 + r:02X}", "STA $2006")
-        L(f"LDA #${c:02X}", "STA $2006")
+        # nametable address = $2000 + row*32 + column; getting this wrong
+        # puts the digit in the other nametable (or another row) and the
+        # screen quietly shows the placeholder zero instead
+        off = r * 32 + c
+        L(f"LDA #${0x20 + (off >> 8):02X}", "STA $2006")
+        L(f"LDA #${off & 0xFF:02X}", "STA $2006")
         L("PLA", "STA $2007")
 
     # the scroll register t also carries the nametable bits, and the VRAM
@@ -624,8 +628,12 @@ def build_mmc3_rom(index, shape):
         L(f"JMP rd{t}")
         L(f"rf{t}:", f"LDA #${index['0']:02X}")
         L(f"rd{t}:", "PHA")
-        L(f"LDA #${0x20 + r:02X}", "STA $2006")
-        L(f"LDA #${c:02X}", "STA $2006")
+        # nametable address = $2000 + row*32 + column; getting this wrong
+        # puts the digit in the other nametable (or another row) and the
+        # screen quietly shows the placeholder zero instead
+        off = r * 32 + c
+        L(f"LDA #${0x20 + (off >> 8):02X}", "STA $2006")
+        L(f"LDA #${off & 0xFF:02X}", "STA $2006")
         L("PLA", "STA $2007")
 
     L("LDA #$00", "STA $2000")                  # nametable 0, pattern 0

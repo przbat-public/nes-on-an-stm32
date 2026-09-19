@@ -309,11 +309,16 @@ Then the debugging, which taught two lessons in one evening:
      PRG banking markers at `$0300`-`$0305`. The markers were still
      "right" by luck; moving the counters to `$0310`/`$0311` fixed it.
 
-One thing that cartridge still gets wrong is on its own screen: the result
-digits are always written as `0`, even though the result byte in RAM says
-`$3F` (all six pass) and the checks themselves are correct. The display
-routine is the buggy part, not the emulator — worth fixing before anyone
-trusts that screen at a glance.
+That cartridge then lied on its own screen, which is worth its own
+paragraph: all four results printed `0` while the result byte in RAM said
+`$3F`. The checks were right and so was the emulator — the display routine
+computed its nametable address as `(0x20 + row) << 8 | column`, which for
+row 4 lands at `$2418`: the *second* nametable, row 0. The digit went to
+the top corner of the screen (that stray `1` was the tell) and the
+placeholder zero written by the table fill stayed where the verdict should
+have been. The address of a nametable cell is `$2000 + row*32 + column`,
+and both the MMC1 and MMC3 generators were doing it wrong — the MMC1 one
+had simply never been looked at closely enough to notice.
 
 With the test cartridge passing all six checks, the real game was verified
 the same way as everything else: the board's framebuffer matches the PC
