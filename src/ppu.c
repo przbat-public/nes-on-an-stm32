@@ -14,8 +14,29 @@
  */
 #include "ppu.h"
 #include "nesmem.h"      /* inline chr_read() for the pattern fetches */
+#include "hal.h"
 
-uint8_t  ppu_line[PPU_W];
+#ifdef NES_PROFILING
+#define CYC_NOW() cycles_now()
+#else
+#define CYC_NOW() 0u
+#endif
+
+/* where the renderer's time goes. The accumulators are plain statics (the
+ * += happens once per line, the publish once per frame) and the dbg_*
+ * values are the last *complete* frame, so one SWD read is self-consistent
+ * even if the scene changes under it. */
+volatile uint32_t dbg_cyc_fill, dbg_cyc_bg, dbg_cyc_spr;
+static uint32_t acc_fill, acc_bg, acc_spr;
+
+void ppu_dbg_frame(void)
+{
+    dbg_cyc_fill = acc_fill; acc_fill = 0;
+    dbg_cyc_bg   = acc_bg;   acc_bg   = 0;
+    dbg_cyc_spr  = acc_spr;  acc_spr  = 0;
+}
+
+uint8_t  ppu_line[PPU_W] __attribute__((aligned(4)));
 uint32_t ppu_frames;
 
 uint8_t (*ppu_chr_read)(uint16_t addr);
@@ -31,6 +52,75 @@ static uint8_t  pal_cache[32];    /* same values, masked: the renderer
                                    * instead of calling a function      */
 static uint8_t  oam[256];         /* sprite memory                  */
 static uint8_t  oam_addr;
+
+/* ------------------------- tile expansion ------------------------- */
+/*
+ * The background used to be expanded one pixel at a time:
+ *
+ *     for (bit = 0; bit < 8; bit++) {
+ *         pix = ((lo >> b) & 1) | (((hi >> b) & 1) << 1);
+ *         if (pix) out[bit] = (pix == 1) ? c1 : (pix == 2) ? c2 : c3;
+ *     }
+ *
+ * which is ~19 instructions and two data-dependent branches per pixel —
+ * it was 42% of a whole frame. Instead the eight pixels are packed into
+ * one 16-bit word (two bits per pixel) with a bit spread, and turned into
+ * eight palette bytes two pixels at a time through a 16-entry table per
+ * palette group. The zero pixels need no special case: ppu_line is
+ * pre-filled with the backdrop colour, and writing that value back is
+ * exactly what leaving the pixel alone used to do.
+ *
+ *   sprd[x] bit-reverses a pattern byte so pixel k is bit k of it, then
+ *           moves bit k to bit 2k, leaving the gap the second bitplane
+ *           goes into: two of them OR together into a 2-bit-per-pixel
+ *           pattern word. Done with shifts it is a 22-instruction serial
+ *           chain per tile column, which is what a 256-entry table avoids.
+ *   pair[g][nibble] is the two output bytes for the two pixels of that
+ *           nibble, for palette group g (rebuilt when palette RAM changes)
+ */
+static uint16_t pair[8][16];
+static uint16_t sprd[256];
+
+/* group g is pal_cache[4g..4g+3]: background palettes 0-3, sprite 4-7.
+ *
+ * Pixel value 0 of *every* background palette shows the universal backdrop
+ * at $3F00 (pal_cache[0]) — the colour written to $3F04/$3F08/$3F0C is not
+ * what a zero pixel displays. Getting this wrong is invisible on the test
+ * cartridges, which write the same colour to all four backdrop entries;
+ * tools/ppu_expand_test.c compares this against the per-pixel loop for a
+ * palette RAM where nothing coincides. */
+static void build_pair(int g)
+{
+    const uint8_t *c = &pal_cache[g * 4];
+    uint8_t bd = pal_cache[0];
+    for (int n = 0; n < 16; n++) {
+        uint8_t p0 = (n & 3) ? c[n & 3] : bd;
+        uint8_t p1 = ((n >> 2) & 3) ? c[(n >> 2) & 3] : bd;
+        pair[g][n] = (uint16_t)(p0 | (p1 << 8));
+    }
+}
+
+static void build_sprd(void)
+{
+    for (int x = 0; x < 256; x++) {
+        uint32_t r = 0;
+        for (int k = 0; k < 8; k++)
+            if (x & (1 << k)) r |= 1u << (2 * (7 - k));
+        sprd[x] = (uint16_t)r;
+    }
+}
+
+typedef uint32_t __attribute__((may_alias)) u32a;
+
+/* two pixels, one 16-bit store; the address is not always 4-byte aligned
+ * (fine_x shifts the whole line by up to 7), which the M4 allows */
+typedef struct { uint16_t h; } __attribute__((packed, may_alias)) u16u;
+
+static inline void put_pair(uint8_t *out, uint16_t v)
+{
+    ((u16u *)(void *)out)->h = v;
+}
+
 
 static uint8_t  ctrl;             /* $2000 */
 static uint8_t  mask;             /* $2001 */
@@ -96,6 +186,12 @@ void ppu_write_vram(uint16_t addr, uint8_t val)
         if ((p & 0x13) == 0x10) p &= 0x0F;
         pal[p] = (uint8_t)(val & 0x3F);
         pal_cache[p] = (uint8_t)(val & 0x3F);
+        /* keep the expansion tables in step; the backdrop reaches all of
+         * them, the other entries only their own palette group */
+        if (p == 0)
+            for (int g = 0; g < 8; g++) build_pair(g);
+        else
+            build_pair(p >> 2);
     }
 }
 
@@ -227,13 +323,23 @@ static void sprite_fetch(int i, int row, sprite_row_t *out)
 
 void ppu_render_scanline(int y)
 {
+    uint32_t t0 = CYC_NOW(), t1;
     uint8_t backdrop = pal_cache[0];
 
-    for (int i = 0; i < PPU_W; i++)
-        ppu_line[i] = backdrop;
+    /* word fill, unrolled: the byte loop compiled to a memset call and the
+     * plain word loop to two instructions of overhead per word */
+    uint32_t bd = (uint32_t)backdrop * 0x01010101u;
+    u32a *line32 = (u32a *)(void *)ppu_line;
+    for (int i = 0; i < PPU_W / 4; i += 4) {
+        line32[i + 0] = bd; line32[i + 1] = bd;
+        line32[i + 2] = bd; line32[i + 3] = bd;
+    }
 
     bool bg_on = (mask & 0x08) != 0;
     bool sp_on = (mask & 0x10) != 0;
+    t1 = CYC_NOW();
+    acc_fill += t1 - t0;
+    t0 = t1;
 
     /* ---------------- background ---------------- */
     if (bg_on) {
@@ -265,16 +371,17 @@ void ppu_render_scanline(int y)
             uint8_t hi = chr_read((uint16_t)(paddr + 8));
             int start = col * 8 - line_fx;
 
-            /* the common case: the whole tile is on screen */
+            /* the common case: the whole tile is on screen. The two
+             * bitplanes become one 2-bit-per-pixel word, then four
+             * nibbles become four pixel pairs. */
             if (start >= 0 && start <= PPU_W - 8) {
                 uint8_t *out = &ppu_line[start];
-                for (int bit = 0; bit < 8; bit++) {
-                    uint8_t b = (uint8_t)(7 - bit);
-                    uint8_t pix = (uint8_t)(((lo >> b) & 1) |
-                                            (((hi >> b) & 1) << 1));
-                    if (pix)
-                        out[bit] = (pix == 1) ? c1 : (pix == 2) ? c2 : c3;
-                }
+                uint32_t pat = sprd[lo] | ((uint32_t)sprd[hi] << 1);
+                const uint16_t *pt = pair[palette];
+                put_pair(out,     pt[pat & 0xF]);
+                put_pair(out + 2, pt[(pat >> 4) & 0xF]);
+                put_pair(out + 4, pt[(pat >> 8) & 0xF]);
+                put_pair(out + 6, pt[(pat >> 12) & 0xF]);
             } else {
                 for (int bit = 0; bit < 8; bit++) {
                     int px = start + bit;
@@ -300,6 +407,9 @@ void ppu_render_scanline(int y)
     }
 
     /* ---------------- sprites ---------------- */
+    t1 = CYC_NOW();
+    acc_bg += t1 - t0;
+    t0 = t1;
     if (sp_on) {
         int h = SPRITE_H();
         int count = 0;
@@ -340,6 +450,7 @@ void ppu_render_scanline(int y)
             }
         }
     }
+    acc_spr += CYC_NOW() - t0;
 }
 
 /* ------------------------- per-line scrolling --------------------- */
@@ -440,4 +551,6 @@ void ppu_reset(void)
     for (int i = 0; i < 0x800; i++) vram[i] = 0;
     for (int i = 0; i < 32; i++)    pal[i] = pal_cache[i] = 0;
     for (int i = 0; i < 256; i++)   oam[i] = 0;
+    build_sprd();
+    for (int g = 0; g < 8; g++) build_pair(g);
 }

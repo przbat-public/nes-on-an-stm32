@@ -33,6 +33,9 @@ void spi_dma_wait(void);
 bool spi_dma_busy(void);
 bool spi_dma_available(void);   /* did the boot self test pass? */
 
-/* cycle counter (DWT) for timing measurements */
+/* cycle counter (DWT) for timing measurements.
+ * Inline: the frame accounting calls it a few thousand times per frame, and
+ * a call to hal.c costs more than the counter it reads. */
+#define DWT_CYCCNT (*(volatile uint32_t *)0xE0001004UL)
 void     cycles_init(void);
-uint32_t cycles_now(void);
+static inline uint32_t cycles_now(void) { return DWT_CYCCNT; }

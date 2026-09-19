@@ -16,6 +16,7 @@
 #include "ppu.h"
 #include "nesmem.h"
 #include "mapper.h"
+#include "hal.h"
 
 int nes_mapper;
 int nes_prg_banks;
@@ -174,11 +175,19 @@ void nes_reset(void)
 /* phase profiling: host cycles spent emulating the CPU, rendering the
  * PPU and converting bands (readable over SWD) */
 volatile uint32_t dbg_irq_count, dbg_irq_line;
-volatile uint32_t dbg_cyc_cpu, dbg_cyc_ppu, dbg_cyc_flush, dbg_cyc_frame;
+volatile uint32_t dbg_cyc_cpu, dbg_cyc_ppu, dbg_cyc_frame;
+/* the two pieces of the frame loop that had no counter before: the display
+ * hook (which lcd.c times itself, see dbg_cyc_flush) and the per-line
+ * bookkeeping around it (mapper tick, scroll reload, NMI) */
+volatile uint32_t dbg_cyc_hook, dbg_cyc_loop;
+
+/* lcd.c and ppu.c fill their own slice of the budget; publish theirs too,
+ * at the frame boundary, so one SWD read is one whole frame */
+void lcd_dbg_frame(void);
+void ppu_dbg_frame(void);
 
 #ifdef NES_PROFILING
-extern uint32_t cycles_now(void);
-#define CYC_NOW() cycles_now()
+#define CYC_NOW() cycles_now()      /* static inline in hal.h */
 #else
 #define CYC_NOW() 0u          /* host builds have no cycle counter */
 #endif
@@ -186,14 +195,14 @@ extern uint32_t cycles_now(void);
 void nes_run_frame(void)
 {
     uint32_t t0 = CYC_NOW();
-    uint32_t cpu_acc = 0, ppu_acc = 0;
+    uint32_t cpu_acc = 0, ppu_acc = 0, hook_acc = 0, loop_acc = 0;
     int prev = 0;
     for (int y = 0; y < 262; y++) {
         int now = 341 * (y + 1) / 3;
         uint32_t a = CYC_NOW();
         cpu_run(now - prev);
-        uint32_t b = CYC_NOW();
-        cpu_acc += b - a;
+        uint32_t d = CYC_NOW();
+        cpu_acc += d - a;
         prev = now;
 
         if (y == 241)
@@ -207,10 +216,14 @@ void nes_run_frame(void)
         if (y < 240) {
             uint32_t c = CYC_NOW();
             ppu_render_scanline(y);
-            uint32_t d = CYC_NOW();
+            d = CYC_NOW();
             ppu_acc += d - c;
-            if (nes_line_hook)
+            if (nes_line_hook) {
                 nes_line_hook(y, ppu_line);
+                c = CYC_NOW();
+                hook_acc += c - d;
+                d = c;
+            }
 
             /* one rendered line = one MMC3 scanline-counter tick; the
              * interrupt is handed to the CPU before it runs the next
@@ -229,10 +242,17 @@ void nes_run_frame(void)
             ppu_clear_nmi();
             cpu_nmi();
         }
+        loop_acc += CYC_NOW() - d;
     }
     ppu_frames++;
+#ifdef NES_PROFILING
+    lcd_dbg_frame();      /* host builds have no lcd.c to publish for */
+#endif
+    ppu_dbg_frame();
     dbg_cyc_cpu   = cpu_acc;
     dbg_cyc_ppu   = ppu_acc;
+    dbg_cyc_hook  = hook_acc;
+    dbg_cyc_loop  = loop_acc;
     dbg_cyc_frame = CYC_NOW() - t0;
 }
 

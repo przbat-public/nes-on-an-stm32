@@ -52,7 +52,6 @@
 
 /* --- DWT cycle counter -------------------------------------------- */
 #define DWT_CTRL   MMIO32(0xE0001000UL)
-#define DWT_CYCCNT MMIO32(0xE0001004UL)
 #define DEMCR      MMIO32(0xE000EDFCUL)
 
 /* ------------------------------------------------------------------ */
@@ -208,4 +207,4 @@ void cycles_init(void)
     DWT_CTRL |= (1u << 0);                    /* CYCCNTENA */
 }
 
-uint32_t cycles_now(void) { return DWT_CYCCNT; }
+/* cycles_now() is a static inline in hal.h (see the comment there) */

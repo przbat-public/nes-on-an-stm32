@@ -229,3 +229,193 @@ NMI, IRQ and DMA stalls) through the working tree's core and one extracted
 from a git revision and compares state hashes — 35 million instructions
 over seven seeds, plus an exhaustive sweep of all 256 opcodes; and
 `tools/mmc3_result.c`, which checks the MMC3 self-test's result byte.
+
+## The frame, closed (and why it looked like 16 ms was missing)
+
+The counters were being read in a way that mixed two different things:
+
+* `dbg_cyc_cpu`, `dbg_cyc_ppu` and `dbg_cyc_frame` are *snapshots* of the
+  last frame;
+* `dbg_cyc_flush` (and `dbg_cyc_band`/`dbg_cyc_wait`/`dbg_bands_sent`/
+  `dbg_bands_skipped`) accumulated **since boot**, so a single read of them
+  says nothing about a frame.
+
+Comparing the snapshots against the totals is what produced the "16 ms
+that appears in no counter" — and the ~84,000-cycle PPU figure in the
+table further up is from an older build/scene; on the board the renderer
+was really costing 1.7–2.0 million cycles, i.e. the *largest* item in the
+frame, not the smallest.
+
+Every counter in `.bss` is now published once per frame, at the frame
+boundary (`lcd_dbg_frame()`, `ppu_dbg_frame()`, the end of
+`nes_run_frame()`), so one SWD read is one complete frame and the budget
+closes without any differencing. The two pieces of the loop that had no
+counter at all — the display hook and the per-line bookkeeping around it —
+now have one (`dbg_cyc_hook`, `dbg_cyc_loop`), and the hook is split into
+copy / change check / DMA wait / conversion / window setup. Reading them is:
+
+    python3 tools/swd.py budget 5      # per-frame table from a 5 s window
+    python3 tools/swd.py track 400 600 # the same numbers at given frames
+    python3 tools/swd.py read          # one sample
+
+`track` exists because Prince of Persia's attract mode changes scene every
+few hundred frames and the frame cost changes with it (a light scene is
+46 ms, a heavy one 56 ms). Comparing two builds at the same *emulated
+frame number* is the only fair way to do it.
+
+### The closed budget — before
+
+Measured over 5 s on the board, Prince of Persia, `dbg_cyc_frame` per frame,
+80 MHz:
+
+| counter | cycles/frame | ms | share |
+|---|---|---|---|
+| `dbg_cyc_cpu` | 1 111 862 | 13.90 | 24.6% |
+| `dbg_cyc_ppu` | 2 078 858 | 25.99 | 46.0% |
+| `dbg_cyc_flush` | 1 253 731 | 15.67 | 27.7% |
+| unaccounted (loop, IRQ, bookkeeping) | 75 085 | 0.94 | 1.7% |
+| **`dbg_cyc_frame`** | **4 519 536** | **56.49** | **17.7 fps** |
+
+Same build, frame-aligned at emulated frames 400–1000 (a lighter scene):
+`dbg_cyc_frame` 3 719 746 (46.5 ms) = cpu 792 109 (9.9 ms) + ppu 1 659 294
+(20.7 ms) + everything in the display hook 1 268 343 (15.9 ms). 21 fps.
+
+So the missing 16 ms was the display hook plus a PPU that costs 20 ms, not
+1 ms. The DMA wait (`dbg_cyc_wait`) was 0.02 ms: **the transfer was already
+hidden**; the wire time (24.6 ms of traffic, ~21 ms of it actually sent
+because unchanged bands are skipped) is overlapped with the emulation.
+
+### What was changed
+
+1. **The background renderer** (`ppu.c`), the largest item. It expanded one
+   pixel at a time — 19 instructions and two data-dependent branches per
+   pixel. Now the two pattern bytes are packed into one 16-bit
+   two-bits-per-pixel word through a 256-entry table (`sprd[]`, 512 bytes)
+   and expanded to eight palette bytes four nibbles at a time through
+   `pair[8][16]` (256 bytes, rebuilt whenever palette RAM is written), with
+   four 16-bit stores. Zero pixels need no branch: `ppu_line` is pre-filled
+   with the backdrop and writing that value back is what leaving the pixel
+   alone used to do.
+   → background 19.6 ms → 8.2 ms, pixel-for-pixel identical.
+
+   One trap came out of this and is worth writing down. Pixel value 0 of
+   *every* background palette shows the universal backdrop at $3F00, not
+   that palette's own entry 0 — the colour a cartridge writes to $3F04/
+   $3F08/$3F0C is never displayed. The first version of the table used
+   `pal_cache[palette*4]`, and **the frame-for-frame comparisons did not
+   catch it**, because all three test cartridges (and Prince of Persia at
+   the point they were compared) write the same colour to all four backdrop
+   entries. `tools/ppu_expand_test.c` (`make host-ppu-test`) now compares
+   the table against the old per-pixel loop exhaustively — every (lo, hi)
+   pair, all four palettes, with a palette RAM where nothing coincides:
+   262,144 checks, 0 failed with the fix, 176,925 failed without it.
+2. **The backdrop fill** in the same function: the byte loop compiled to a
+   `memset` call (271 cycles a line); it is an unrolled word fill now.
+   → 0.81 ms → 0.59 ms.
+3. **The scanline copy and the "did this band change" test** (`lcd.c`) were
+   two byte-wise passes over the same 61,440 bytes. The change test is now
+   accumulated, word at a time, *while* the scanline is copied into the
+   framebuffer, so it costs nothing extra. The firmware proves the two
+   agree at every boot: for the first 8 frames it redoes the byte-wise
+   comparison and checks it says "unchanged" exactly when the accumulated
+   word does, and that a band it just sent really did land in the shadow
+   (`dbg_lcd_band_ok`, 240 bands checked, reads 1).
+   → copy + change check 10.6 ms → 2.5 ms.
+4. **The band conversion** looks its palette up through `pal_sw_idx[256]`
+   (a 512-byte table indexed by a raw framebuffer byte) instead of masking
+   every pixel first. → 3.94 ms → 3.37 ms. `lcd_conv_selfcheck()` now
+   verifies *that* table, since it is the one the panel sees.
+5. `cycles_now()` is a `static inline` in `hal.h`: the frame accounting
+   calls it a few thousand times a frame and a call to `hal.c` cost more
+   than the counter it reads.
+
+Not worth doing, and measured rather than guessed: **a second staging
+buffer** (the DMA wait is 0.02–2.6 ms a frame and the wait that remains is
+the wire time itself), and **a taller band** (`set_window`, three commands
+plus two data phases 30 times a frame, costs 0.25 ms — even BAND_H 16
+would save 0.12 ms for 4 KB of RAM).
+
+### The closed budget — after
+
+Same board, same cartridge, 5 s window, and a frame-aligned column at the
+same emulated frames:
+
+| counter | cycles/frame | ms | share |
+|---|---|---|---|
+| `dbg_cyc_cpu` | 767 736 | 9.60 | 33.8% |
+| `dbg_cyc_ppu` | 727 572 | 9.09 | 32.1% |
+| — `dbg_cyc_fill` (backdrop) | 50 397 | 0.63 | |
+| — `dbg_cyc_bg` (tiles) | 657 054 | 8.21 | |
+| — `dbg_cyc_spr` (sprites) | 6 480 | 0.08 | |
+| `dbg_cyc_hook` (display hook) | 709 675 | 8.87 | 31.3% |
+| — `dbg_cyc_copy` | 163 748 | 2.05 | |
+| — `dbg_cyc_diff` (change check) | 36 192 | 0.45 | |
+| — `dbg_cyc_wait` (DMA) | 198 974 | 2.49 | |
+| — `dbg_cyc_conv` | 269 550 | 3.37 | |
+| — `dbg_cyc_setwin` | 19 925 | 0.25 | |
+| `dbg_cyc_loop` (mapper, IRQ, NMI) | 53 189 | 0.66 | 2.3% |
+| **`dbg_cyc_frame`** | **2 268 414** | **28.36** | **35.4 fps** |
+
+`UNACCOUNTED` is 0.13 ms (0.5%) — the frame is closed. Three 4 s samples
+gave 35.85 / 35.59 / 35.38 fps for this scene.
+
+Before and after at the *same emulated frames* (the only fair comparison,
+and three valid samples per build):
+
+| emulated frame | before `cyc_frame` | after `cyc_frame` | before fps | after fps |
+|---|---|---|---|---|
+| 400 | 3 786 478 (47.3 ms) | 2 268 460 (28.4 ms) | 21 | 35 |
+| 600 | 3 696 366 (46.2 ms) | 2 289 771 (28.6 ms) | 21 | 34 |
+| 800 | 3 699 190 (46.2 ms) | 2 290 976 (28.6 ms) | 21 | 34 |
+| 1000 | 3 696 949 (46.2 ms) | 2 288 838 (28.6 ms) | 21 | 34 |
+| 1200 | 4 399 862 (55.0 ms) | 3 018 334 (37.7 ms) | 18 | 26 |
+| 1400 | 4 463 676 (55.8 ms) | 3 007 771 (37.6 ms) | 17 | 26 |
+
+(The last two rows sit in a scene where the game itself does much more CPU
+work — 1.35 M cycles against 0.77 M — and the frame rate of the *demo* also
+shifts which scene the attract mode is showing, so the last two rows are
+the loosest part of the comparison; the first four are stable to under 1%
+across runs of both builds.)
+
+`dbg_cyc_ppu` over the same frames: 1 741 815 → 721 074 (light scene) and
+2 028 115 → 1 009 271 (heavy scene). Wall-clock samples right after boot: 35.85 / 35.59 / 35.38 fps after
+(21 fps before, same scene, frame-aligned); in the game's heavier scenes
+26-30 fps after against 17-18 before.
+
+### What is left, and the ceiling
+
+`dbg_cyc_cpu` is now the largest single item — 9.6 ms in a light scene,
+13.5-14.2 ms in a heavy one — at ~82-84 host cycles per emulated
+instruction. Past that the wall is the display link again: 25
+bands × 4 KB at 40 MHz is 20.5 ms of wire time a frame, so even with free
+emulation this build cannot go much past ~45 fps. `dbg_cyc_wait` (2.5 ms)
+is already the emulation running out of work rather than the transfer
+being late.
+
+### The guard rails that were run
+
+| check | result |
+|---|---|
+| `make host-test` | 19 checks, 0 failed |
+| `make` (arm-none-eabi-gcc, `-Wall -Wextra`) | 0 warnings, 0 errors |
+| `make host-ppu-test` (new) | 262,144 checks, 0 failed |
+| `make host-rom ROM=build/test.nes FRAMES=60` | 0 differing bytes (checksum 0586B1E4) |
+| `make host-rom ROM=build/mmc3.nes FRAMES=90` | 0 differing bytes (checksum 8097F62C) |
+| `make host-rom ROM=build/mmc1.nes FRAMES=60` | 0 differing bytes (checksum BCD8C7DC) |
+| MMC3 self-test, `$030F` (host and on the board) | 3F, PASS |
+| `dbg_lcd_conv_ok` after boot | 1 |
+| `dbg_lcd_band_ok` after boot | 1 (240 bands checked) |
+| `tools/diff_run.sh 5000000 HEAD` | 5,000,105 instructions, identical state hashes |
+
+(The 6502 core itself was not touched; the differential core harness was
+run anyway and reports the working tree's core identical to the committed
+one. The capture of the three reference frames was taken before any
+change and lives in `build/ref/`.)
+
+### Flashing while openocd is running
+
+`st-flash` cannot open the ST-Link while `openocd` holds it — it fails with
+"another process has device opened for exclusive access" and, with the
+output piped, quietly does nothing. Use the openocd telnet port instead:
+
+    tools/ocd_flash.sh emu.bin        # reset halt, write, verify, reset run

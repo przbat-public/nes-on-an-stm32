@@ -28,7 +28,7 @@ HOSTCC  ?= cc
 HOSTCFLAGS = -O2 -Wall -Wextra -Isrc -Ibuild
 HOST_SRCS  = src/cpu6502.c src/ppu.c src/nes.c src/mapper.c
 
-.PHONY: all flash rom romdata host-test host-rom clean
+.PHONY: all flash rom romdata host-test host-ppu-test host-rom clean
 
 all: $(TARGET).bin
 
@@ -64,6 +64,13 @@ flash: $(TARGET).bin
 host-test: build/cpu_test.h
 	$(HOSTCC) $(HOSTCFLAGS) -o build/host_test tools/host_test.c src/cpu6502.c
 	./build/host_test
+
+# differential test for the background tile expander's tables
+host-ppu-test: build/ppu_expand_test
+	./build/ppu_expand_test
+
+build/ppu_expand_test: tools/ppu_expand_test.c src/ppu.c src/ppu.h
+	$(HOSTCC) $(HOSTCFLAGS) -DNES_BUS_INLINE -o $@ tools/ppu_expand_test.c
 
 build/cpu_test.h: tools/cpu_test.py tools/asm6502.py tools/gen_6502.py
 	python3 tools/cpu_test.py
