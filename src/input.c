@@ -62,18 +62,9 @@ static const pin_t map[] = {
 };
 #define N_BUTTONS (sizeof(map) / sizeof(map[0]))
 
-static void jtag_release(void)
-{
-    volatile uint32_t *rcc = (volatile uint32_t *)(0x40021000UL + 0x60);
-    *rcc |= (1u << 0);                          /* SYSCFGEN */
-    __asm volatile ("dsb sy" ::: "memory");
-    volatile uint32_t *cfgr1 = (volatile uint32_t *)(0x40010000UL);
-    *cfgr1 = (*cfgr1 & ~(7u << 24)) | (2u << 24);   /* JTAG off, SWD on */
-}
-
 void input_init(void)
 {
-    jtag_release();
+    hal_release_jtag_pins();
     for (unsigned i = 0; i < N_BUTTONS; i++)
         gpio_input_pullup(map[i].port, map[i].pin);
 
@@ -132,22 +123,25 @@ uint8_t input_pad(void)
     bool up   = (pad & PAD_UP) != 0;
     bool down = (pad & PAD_DOWN) != 0;
 
+    /* Which direction joins the blue button to mean START, and what the
+     * button means on its own, is the only thing the layouts disagree on. */
+    bool start_combo;
     if (shooter_layout) {
         pad &= (uint8_t)~PAD_A;              /* the button is B here */
-        if (blue) pad |= PAD_B;              /* fire */
+        if (blue)       pad |= PAD_B;        /* fire */
         if (blue && up) pad |= PAD_A;        /* jump, as shooters want it */
-        if (blue && down) {
-            if (++start_hold >= START_HOLD) pad |= PAD_START;
-        } else {
-            start_hold = 0;
-        }
+        start_combo = blue && down;
     } else {
         if (blue && down) pad |= PAD_B;      /* secondary action */
-        if (blue && up) {
-            if (++start_hold >= START_HOLD) pad |= PAD_START;
-        } else {
-            start_hold = 0;
-        }
+        start_combo = blue && up;
+    }
+
+    /* START has to be *held*: a tap of fire while ducking, or a jump with
+     * the button down, must not pause the game by accident. */
+    if (start_combo) {
+        if (++start_hold >= START_HOLD) pad |= PAD_START;
+    } else {
+        start_hold = 0;
     }
 
     return pad;

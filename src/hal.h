@@ -44,3 +44,7 @@ bool spi_dma_available(void);   /* did the boot self test pass? */
 #define DWT_CYCCNT (*(volatile uint32_t *)0xE0001004UL)
 void     cycles_init(void);
 static inline uint32_t cycles_now(void) { return DWT_CYCCNT; }
+
+/* Free the pins the joystick shares with the JTAG port (SWD is kept). Call
+ * before configuring any joystick pin, or PB4 reads as permanently low. */
+void hal_release_jtag_pins(void);

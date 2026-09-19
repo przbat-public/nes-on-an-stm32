@@ -17,6 +17,7 @@
 #define RCC_PLLCFGR  MMIO32(RCC_BASE + 0x0C)
 #define RCC_AHB1ENR  MMIO32(RCC_BASE + 0x48)
 #define RCC_AHB2ENR  MMIO32(RCC_BASE + 0x4C)
+#define SYSCFG_CFGR1 MMIO32(0x40010000UL)
 #define RCC_APB2ENR  MMIO32(RCC_BASE + 0x60)
 
 #define FLASH_ACR    MMIO32(0x40022000UL)
@@ -269,3 +270,14 @@ void cycles_init(void)
 }
 
 /* cycles_now() is a static inline in hal.h (see the comment there) */
+
+/* PB4 is NJTRST and PC0/PB0/PB6 share the debug port's neighbours, so the
+ * joystick cannot be read while JTAG owns those pins. SWD stays enabled, so
+ * the debugger keeps working; only JTAG is switched off. Called once at
+ * startup, before any joystick pin is configured. */
+void hal_release_jtag_pins(void)
+{
+    RCC_APB2ENR |= (1u << 0);                   /* SYSCFGEN */
+    clk_sync(); (void)RCC_APB2ENR;
+    SYSCFG_CFGR1 = (SYSCFG_CFGR1 & ~(7u << 24)) | (2u << 24);
+}
