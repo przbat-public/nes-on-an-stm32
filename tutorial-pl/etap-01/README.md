@@ -58,6 +58,13 @@ w innym narożniku, niż powinien, wiesz, że orientacja jest ustawiona inaczej.
 ## Zbuduj i wgraj
 
 ```bash
+# z katalogu tutorial-pl:
+make STAGE=01 flash
+```
+
+To samo ręcznie, jeśli chcesz zobaczyć każdy krok:
+
+```bash
 arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -O2 -nostartfiles \
     -T ../../src/linker.ld ../../src/startup_l476.s main.c -o etap01.elf
 arm-none-eabi-objcopy -O binary etap01.elf etap01.bin

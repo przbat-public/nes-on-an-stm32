@@ -56,6 +56,13 @@ etapu to `0x001F`.
 Z katalogu `tutorial-pl/etap-00`:
 
 ```bash
+# z katalogu tutorial-pl:
+make STAGE=00 flash
+```
+
+To samo ręcznie, jeśli chcesz zobaczyć każdy krok:
+
+```bash
 arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -O2 -nostartfiles \
     -T ../../src/linker.ld ../../src/startup_l476.s main.c -o etap00.elf
 arm-none-eabi-objcopy -O binary etap00.elf etap00.bin
