@@ -43,7 +43,7 @@ int main(void)
     int rc = nes_load(nes_rom, nes_rom_len);
     if (rc != NES_OK) {
         show_boot_text("CART LOAD ERROR", rc == NES_ERR_MAPPER
-                       ? "UNSUPPORTED MAPPER (NROM MMC1 MMC3)"
+                       ? "UNSUPPORTED MAPPER NROM MMC1 UxROM MMC3"
                        : "BAD INES IMAGE");
         for (;;) {}
     }

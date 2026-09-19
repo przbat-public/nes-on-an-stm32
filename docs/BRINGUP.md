@@ -309,6 +309,12 @@ Then the debugging, which taught two lessons in one evening:
      PRG banking markers at `$0300`-`$0305`. The markers were still
      "right" by luck; moving the counters to `$0310`/`$0311` fixed it.
 
+One thing that cartridge still gets wrong is on its own screen: the result
+digits are always written as `0`, even though the result byte in RAM says
+`$3F` (all six pass) and the checks themselves are correct. The display
+routine is the buggy part, not the emulator — worth fixing before anyone
+trusts that screen at a glance.
+
 With the test cartridge passing all six checks, the real game was verified
 the same way as everything else: the board's framebuffer matches the PC
 reference **pixel for pixel** (the same SHA-256 for the AREA 1 screen),

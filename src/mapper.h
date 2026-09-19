@@ -5,6 +5,11 @@
  * Mapper 1 (MMC1): five-bit serial writes to $8000-$FFFF select PRG and
  * CHR banks and the nametable mirroring (this is the chip in a large part
  * of the NES library).
+ * Mapper 2 (UxROM): the simplest bank switcher there is — writes to
+ * $8000-$FFFF select a 16 KB PRG bank at $8000, while $C000 stays on the
+ * last bank of the cartridge (which is where the vectors live). CHR is
+ * usually 8 KB of RAM on these boards, which the machine layer already
+ * handles.
  * Mapper 4 (MMC3): bank registers at $8000/$8001, mirroring at $A000, and
  * a scanline counter at $C000-$E001 that raises an IRQ — that counter is
  * how games split the screen (a fixed status bar with a scrolling
@@ -19,6 +24,7 @@
 
 #define MAPPER_NROM 0
 #define MAPPER_MMC1 1
+#define MAPPER_UXROM 2
 #define MAPPER_MMC3 4
 
 /* set up the mapper for a freshly loaded cartridge */

@@ -40,6 +40,7 @@ static const uint8_t *chr_base;
 static uint32_t chr_banks;      /* in 8 KB units  */
 
 static uint8_t shift_reg, shift_count;      /* MMC1 serial port */
+static uint8_t uxrom_bank;                  /* UxROM: 16 KB bank at $8000 */
 
 /* MMC3 state */
 static uint8_t mmc3_regs[8];
@@ -104,6 +105,14 @@ static void set_chr4k(uint32_t bank0, uint32_t bank1)
 {
     uint32_t a = bank0 * 4, b = bank1 * 4;
     set_chr1k(a, a + 1, a + 2, a + 3, b, b + 1, b + 2, b + 3);
+}
+
+/* UxROM: one switchable 16 KB bank at $8000, the last bank fixed at
+ * $C000 so the reset and interrupt vectors never move. */
+static void uxrom_apply(void)
+{
+    set_prg16(0, uxrom_bank % prg_banks);
+    set_prg16(1, prg_banks - 1);
 }
 
 /* ---------------------------- mirroring --------------------------- */
@@ -205,8 +214,13 @@ void mapper_init(int number, const uint8_t *prg, uint32_t prg_size,
     mmc3_irq_latch = mmc3_irq_counter = 0;
     mmc3_irq_reload = mmc3_irq_enabled = mmc3_irq_flag = false;
 
+    uxrom_bank = 0;
+
     if (mapper_num == MAPPER_MMC3) {
         mmc3_apply();           /* even the reset vectors need R6/R7 */
+    } else if (mapper_num == MAPPER_UXROM) {
+        if (!nes_chr_is_ram && chr_banks) set_chr8k(0);
+        uxrom_apply();
     } else if (mapper_num == MAPPER_MMC1) {
         mmc1_apply(mmc1_control);
     } else {
@@ -263,6 +277,14 @@ void mapper_write(uint16_t addr, uint8_t value)
         mmc3_regs_dbg[0] = mmc3_regs[0];             /* readable over SWD */
         mmc3_regs_dbg[1] = mmc3_regs[1];
         mmc3_irq_latch_dbg = mmc3_irq_latch;
+        return;
+    }
+
+    if (mapper_num == MAPPER_UXROM) {
+        /* the low bits pick the bank; real boards AND the value with the
+         * ROM byte they see (bus conflicts), which games avoid anyway */
+        uxrom_bank = (uint8_t)(value & 0x0F);
+        uxrom_apply();
         return;
     }
 

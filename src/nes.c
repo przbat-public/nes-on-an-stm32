@@ -126,8 +126,9 @@ int nes_load(const uint8_t *rom, uint32_t size)
     nes_prg_banks = prg_banks;
     nes_chr_banks = chr_banks;
 
-    if (mapper != MAPPER_NROM && mapper != MAPPER_MMC1 && mapper != MAPPER_MMC3)
-        return NES_ERR_MAPPER;           /* NROM, MMC1 and MMC3 for now */
+    if (mapper != MAPPER_NROM && mapper != MAPPER_MMC1 &&
+        mapper != MAPPER_UXROM && mapper != MAPPER_MMC3)
+        return NES_ERR_MAPPER;   /* NROM, MMC1, UxROM and MMC3 so far */
 
     uint32_t need = (uint32_t)(16 + trainer + prg_banks * 16384
                                + (chr_banks ? chr_banks * 8192 : 0));
