@@ -41,10 +41,12 @@ to `4E 45 53 1A`: litery `N`, `E`, `S` i znacznik końca pliku z dawnych system�
 który ich nie znajdzie, wie, że to nie kartridż.
 
 Dalej lecą liczby: **bajt 5** mówi, ile banków ma pamięć programu, **bajt 6**, ile banków ma
-pamięć grafiki, **bajt 7** zbiera znaczniki, a **bajt 8** to numer układu na płytce kartridża.
-Numer układu to osiem bitów. Format rozkłada go jednak na dwa bajty: cztery bity w bajcie 7
-i cztery w bajcie 8. W obu bajtach zostały wolne miejsca, więc tam trafiły, a program składa
-je z powrotem w jedną liczbę.
+pamięć grafiki, a **bajt 7** zbiera znaczniki. W bajtach 7 i **8** siedzi jeszcze numer układu,
+czyli tego, co na płytce kartridża decyduje, jak kartridż pokazuje procesorowi swoją pamięć.
+Numer ma osiem bitów, a format rozkłada go na dwa bajty: cztery górne bity w bajcie 8, cztery
+dolne w górnej połowie bajta 7. W obu bajtach zostały wolne miejsca, więc tam trafiły, a program
+składa je z powrotem w jedną liczbę. Co taki układ robi, zobaczysz w etapach 13 i 14: to on
+podmienia kartridżowi fragmenty pamięci w trakcie gry.
 
 ## Jak to wygląda w kodzie
 
@@ -60,19 +62,20 @@ header->mapper = (header->flags7 & MAPPER_HIGH_NIBBLE) |
 Tablica liczy od zera, tak jak w etapie 01, więc `raw[4]` to piąty bajt pliku. Strzałka `->`
 sięga po pole struktury przez wskaźnik: do funkcji trafia adres struktury, a nie jej kopia.
 
-Znak `&` to iloczyn bitowy: zostawia tylko te bity, które są zapalone w obu liczbach. Znak `|`
-to suma bitowa: skleja dwie liczby w jedną. Znak `>>` przesuwa bity w prawo. Stała
+Znak `&` to iloczyn bitowy: zostawia tylko te bity, które są zapalone w obu liczbach. W etapie
+02 ten sam znak dawał adres zmiennej, ale stał tam przed jedną liczbą; tutaj łączy dwie. Znak
+`|` to suma bitowa: skleja dwie liczby w jedną. Znak `>>` przesuwa bity w prawo. Stała
 `MAPPER_HIGH_NIBBLE` to `0xF0`, czyli cztery górne bity bajtu. Stała `MAPPER_LOW_SHIFT` to 4:
 o tyle miejsc trzeba przesunąć te cztery bity, żeby trafiły na swoje miejsce. Te trzy zabiegi
 to cała lektura nagłówka.
 
 Skąd program bierze te bajty? Otwiera plik funkcją `fopen`, wyciąga z niego 16 bajtów funkcją
-`fread` i zamyka go funkcją `fclose`. Nazwę pliku dostaje od systemu. Parametry `argc` i `argv`
-w `main` to liczba argumentów z wiersza poleceń i ich lista: `argv[0]` to nazwa programu,
-a `argv[1]` to ścieżka, którą wpisałeś. Tryb `"rb"` w `fopen` znaczy „czytaj bajty, nie tekst".
-Bez tego system podmieniłby niektóre bajty i program z kartridża przestałby się zgadzać.
-Na końcu program otwiera plik jeszcze raz, przewija go na koniec funkcją `fseek` i czyta
-pozycję funkcją `ftell`, żeby zmierzyć długość.
+`fread` i zamyka go funkcją `fclose`. Który to plik, mówią parametry `argc` i `argv` w `main`:
+pierwszy to liczba argumentów z wiersza poleceń, drugi to ich lista. `argv[0]` to nazwa
+programu, a `argv[1]` to ścieżka, którą wpisałeś. Tryb `"rb"` w `fopen` znaczy „czytaj bajty,
+nie tekst". Bez tego system podmieniłby niektóre bajty i program z kartridża przestałby się
+zgadzać. Na końcu program otwiera plik jeszcze raz, przewija go na koniec funkcją `fseek`
+i czyta pozycję funkcją `ftell`, żeby zmierzyć długość.
 
 ## Plik testowy i uruchomienie
 
@@ -98,20 +101,22 @@ make
 ```
 
 Bez `make` to samo załatwia jedna komenda: `cc -Wall -Wextra -o etap07 main.c`. Flagi
-`-Wall -Wextra` każą kompilatorowi wypisać wszystkie podejrzane miejsca i program kompiluje
-się bez ani jednego ostrzeżenia — to cała jego weryfikacja, bo nie ma tu sprzętu, więc nie ma
-czego sprawdzać okiem. To samo sprawdza `make check` z katalogu `etap-07`. Natomiast
-`make STAGE=07 check` z katalogu `tutorial-pl` nie zadziała. Tamto `make` buduje każdy etap
-kompilatorem dla procesorów Arm, a ten program potrzebuje biblioteki komputera, na którym go
-uruchamiasz.
+`-Wall -Wextra` każą kompilatorowi wypisać wszystkie podejrzane miejsca, a program kompiluje
+się bez ani jednego ostrzeżenia. To cała jego weryfikacja, bo nie ma tu sprzętu, więc nie ma
+czego sprawdzać okiem.
+
+Z katalogu `tutorial-pl` to samo sprawdza `make STAGE=07 check`. Ten etap przynosi własny
+`Makefile`, więc wspólne budowanie przekazuje mu robotę dalej, zamiast sięgać po kompilator
+do procesorów Arm. `make check` z katalogu `etap-07` robi dokładnie to samo.
 
 ## Co powinieneś zobaczyć
 
 Program mówi po angielsku, tak jak kod: `program` to pamięć programu, `graphics` pamięć
 grafiki, a `mapper` numer układu na kartridżu. `saves` mówi, czy kartridż pamięta stan gry
 po wyłączeniu zasilania. `trainer` to dodatkowe 512 bajtów, które niektóre kartridże mają
-przed programem. `mirroring` opisuje pamięć obrazu w konsoli: czy jej dwie połowy leżą jedna
-nad drugą, czy obok siebie. Do tej pamięci zajrzymy w etapie 08.
+przed programem. `mirroring` opisuje pamięć obrazu, czyli miejsce, w którym konsola trzyma to,
+co narysuje: czy jej dwie połowy leżą jedna nad drugą, czy obok siebie. Do tej pamięci zajrzymy
+w etapie 08.
 
 ```
 ../../build/test.nes
@@ -139,14 +144,14 @@ długość.
 Zmień `print_size`, żeby obok rozmiaru wypisywał liczbę banków. Ta funkcja dostanie o jeden
 parametr więcej.
 
-Zbuduj dwa pozostałe kartridże z repozytorium i puść na nie program. Z katalogu głównego
-repozytorium `python3 tools/make_test_rom.py --mmc1`, a potem to samo z `--mmc3`. Pliki
-wylądują w `build/mmc1.nes` i `build/mmc3.nes`. Z katalogu `etap-07` uruchom program tak samo
-jak poprzednio, tylko ze ścieżką do innego pliku: `./etap07 ../../build/mmc1.nes`. Przełączniki
-wybierają kartridże z układem, który podmienia banki w trakcie gry; same układy poznasz
-w etapach 13 i 14. Oba pliki mają 64 kilobajty pamięci programu i 16 kilobajtów grafiki, ale
-inny numer układu: 1 dla `mmc1.nes` i 4 dla `mmc3.nes`. Sprawdź, czy program wypisuje właśnie
-te liczby.
+Zbuduj dwa pozostałe kartridże i uruchom na nich program. Z katalogu głównego repozytorium
+`python3 tools/make_test_rom.py --mmc1`, a potem to samo z `--mmc3`. Pliki wylądują
+w `build/mmc1.nes` i `build/mmc3.nes`. Z katalogu `etap-07` uruchom program tak samo jak
+poprzednio, tylko ze ścieżką do innego pliku: `./etap07 ../../build/mmc1.nes`. Opcje `--mmc1`
+i `--mmc3` każą narzędziu zbudować kartridż z układem, który podmienia banki w trakcie gry;
+jak działa to podmienianie, zobaczysz w etapach 13 i 14. Oba pliki mają 64 kilobajty pamięci
+programu i 16 kilobajtów grafiki, ale inny numer układu: 1 dla `mmc1.nes` i 4 dla `mmc3.nes`.
+Sprawdź, czy program wypisuje właśnie te liczby.
 
 Dodaj wypisanie liczby bajtów przypadających na jeden bank grafiki: podziel rozmiar całej
 grafiki przez liczbę banków. Ma wyjść 8 kilobajtów.

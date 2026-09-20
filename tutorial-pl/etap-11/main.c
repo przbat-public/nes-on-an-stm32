@@ -353,9 +353,9 @@ static uint8_t read_pad(void)
  * frame and moves things with it. Ours moves the hero, and the blue button
  * marks him.
  */
-/* The hero walks in single pixels: sixteen across, like the one in stage 09,
- * and drawn here as a plain square, because the picture is not the subject of
- * this stage. */
+/* The hero sits at a pixel position, not in a cell: he is sixteen across,
+ * like the one in stage 09, and drawn here as a plain square, because the
+ * picture is not the subject of this stage. */
 #define HERO_SIZE 16
 #define HERO_STEP 2
 

@@ -6,16 +6,17 @@ bo ekran konsoli to 61 440 pikseli: 256 w poziomie i 240 w pionie. A do tego obr
 prawie się nie zmienia.
 
 Konsola trzyma więc nie obraz, a jego opis. Opis to trzy rzeczy: wzory kafli, mapa z tablicą
-atrybutów i paleta. Cała praca tego etapu polega na zamianie ich na piksele. Pod koniec
-zobaczysz na panelu pierwszy prawdziwy obraz z kartridża.
+atrybutów i paleta. Ten etap zamienia je na piksele. Pod koniec zobaczysz na panelu pierwszy
+prawdziwy obraz z kartridża.
 
 ## Kafel, czyli wzór osiem na osiem
 
 Najmniejszy kawałek obrazu, jaki konsola umie narysować, ma osiem na osiem pikseli i nazywa
 się **kaflem**. Kafel to nie obrazek, tylko szesnaście bajtów. Pierwszych osiem opisuje jedną
-warstwę kafla, w kodzie nazwaną *bit plane*, drugie osiem drugą. Każdy piksel bierze po jednym
-bicie z obu warstw, więc jego wartość to liczba od zera do trzech: zero znaczy „żadnego
-koloru", a jeden, dwa i trzy to trzy kolory z palety.
+warstwę kafla, drugie osiem drugą. W `cartridge.h` warstwa nazywa się *bit plane*, bo trzyma
+po jednym bicie na piksel. Każdy piksel bierze po jednym bicie z obu warstw, więc jego wartość
+to liczba od zera do trzech: zero znaczy „żadnego koloru", a jeden, dwa i trzy to trzy kolory
+z palety.
 
 Weź literę A z pamięci grafiki naszego kartridża, tego z etapu 07. Jej pierwsza warstwa to
 liczby 0x38, 0x44, 0x44, 0x7C, 0x44, 0x44, 0x44, 0x00. Bajt 0x38 to bity 00111000, a pierwszy
@@ -49,11 +50,11 @@ litery M, I, N.
 ## Paleta, czyli skąd kolor
 
 Kafel mówi, gdzie jest kolor, a nie jaki. Kolor wybiera **paleta**: cztery liczby, jedna na
-tło i trzy na pozostałe wartości piksela. Nasz obraz używa szesnastu bajtów na cztery palety
-tła, a drugie tyle konsola trzyma dla duszków, czyli małych ruchomych obrazków.
+tło i trzy na pozostałe wartości piksela. Konsola trzyma cztery takie palety dla tła, czyli
+szesnaście bajtów, a drugie tyle dla duszków, czyli małych ruchomych obrazków.
 
-Sama paleta też nie trzyma kolorów, tylko numery od zera do 63. Konsola wysyła numer prądem,
-a telewizor sam decyduje, jak ten numer wygląda. W kodzie tego etapu jest więc tablica
+Sama paleta też nie trzyma kolorów, tylko numery od zera do 63. Konsola wysyła numer
+przewodem, a jak ten numer wygląda, decyduje telewizor. W kodzie tego etapu jest więc tablica
 `colour_rgb565` ze wszystkimi 64 numerami i ich kolorami dla panelu. Jedna rzecz bywa przy
 tym zaskakująca: wartość piksela równa zero nie znaczy „pierwszy kolor z palety", tylko
 „żadnego koloru". Konsola maluje tam wspólny kolor tła, ten sam dla wszystkich czterech palet,
@@ -66,8 +67,8 @@ atrybutów: 64 bajty, leżące w tej samej pamięci konsoli co mapa, zaraz za ni
 po jednym bajcie na pole 4 na 4 kafle, czyli 32 na 32 piksele. Jeden bajt niesie cztery
 numery palet, po dwa bity na ćwiartkę pola, a ćwiartka to 2 na 2 kafle, czyli 16 na 16 pikseli.
 
-Uproszczenie ma swoją cenę: paleta zmienia się nie w środku kafla, ale na granicy ćwiartki
-pola. Widać to na naszym obrazie. Wiersz `OVER THE LAZY DOG. 1234567890` łamie się na kolory
+Uproszczenie ma swoją cenę: paleta zmienia się tylko na granicy ćwiartki pola, nigdy w środku
+kafla. Widać to na naszym obrazie. Wiersz `OVER THE LAZY DOG. 1234567890` łamie się na kolory
 co cztery kafle, czyli co 32 piksele, a granica wypada w środku wyrazu: `OV` jest
 jasnoniebieskie, a `ER` czerwone.
 
@@ -79,10 +80,11 @@ grafiki tego kartridża, którego nagłówek czytaliśmy w etapie 07. Reszta to 
 obrazu konsoli, czyli to, co program gry wpisał tam na początku; programu gry jeszcze nie
 uruchamiamy, więc obraz jest zamrożony.
 
-Konsola ma osobny układ, który z tych danych robi obraz. W dokumentacji i w kodzie emulatora
-nazywa się PPU, od angielskiego *Picture Processing Unit*. Nasz program robi to samo, tylko
-prościej: przechodzi mapę kafel po kaflu, kopiuje wzór do bufora obrazu z etapu 04 i podstawia
-kolory z palety wskazanej przez atrybuty. Bufor idzie na panel pasmami, jak w etapie 04.
+Z tych danych obraz składa osobny układ konsoli, czyli **układ obrazu**. W dokumentacji i w
+kodzie emulatora nazywa się PPU, od angielskiego *Picture Processing Unit*. Nasz program robi
+to samo, tylko prościej: przechodzi mapę kafel po kaflu, kopiuje wzór do bufora obrazu
+z etapu 04 i podstawia kolory z palety wskazanej przez atrybuty. Bufor idzie na panel pasmami,
+jak w etapie 04.
 
 ## Co powinieneś zobaczyć
 
@@ -100,9 +102,10 @@ odświeżać.
 
 ## Zbuduj i sprawdź
 
-Z katalogu `tutorial-pl` uruchom `make STAGE=08 check`. Ta komenda kompiluje kod i nic nie
-wgrywa, a jej wynik to cała weryfikacja etapu: zero ostrzeżeń przy `-Wall -Wextra`. Wgranie
-na płytkę to `make STAGE=08 flash`; obrazu nie zobaczysz na komputerze.
+Z katalogu `tutorial-pl` uruchom `make STAGE=08 check`. Ta komenda tylko kompiluje kod
+i nic nie wgrywa, a kompilacja przechodzi bez ostrzeżeń przy `-Wall -Wextra`; to cała
+weryfikacja tego etapu. Na płytkę wgrywasz ten sam kod komendą `make STAGE=08 flash`;
+obrazu nie zobaczysz na komputerze.
 
 ## Ćwiczenia
 

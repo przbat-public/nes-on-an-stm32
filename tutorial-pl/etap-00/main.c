@@ -4,7 +4,7 @@
  * This program does one thing: it turns the whole display one colour. There is
  * no emulator here yet, and no clock setup either: the chip runs on its power-on
  * clock (about 4 MHz), which is slow enough that a full screen takes a moment to
- * fill. Seeing that moment is the point of this stage. Stage 1 raises the clock
+ * fill. Seeing that moment is the point of this stage. Stage 03 raises the clock
  * and explains what changed.
  *
  * What the panel needs before it will show anything, in order:

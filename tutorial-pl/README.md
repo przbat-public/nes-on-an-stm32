@@ -87,8 +87,11 @@ utrudnia czytanie źródeł, ale każde pierwsze użycie ma wyjaśnienie.
 - [x] research metodyki i przegląd skilli językowych
 - [x] refaktor repozytorium: standard stylu, `main.c`, `input.c`, `hal.c`, `font5x7`,
       przegląd narzędzi (przyrosty 1, 2 i 4 z `docs/STYLE.md`)
-- [ ] refaktor rdzeni emulacji: `cpu6502.c`, `ppu.c`, `mapper.c` (przyrost 3,
-      komentarze i nazwy bez zmiany struktury, plik po pliku)
+- [x] refaktor rdzeni emulacji: `cpu6502.c`, `ppu.c`, `mapper.c` (przyrost 3,
+      komentarze i nazwy bez zmiany struktury, plik po pliku). Sprawdzone po
+      scaleniu: 19/19 testów rdzenia, 262 144 i 1 966 080 sprawdzeń, oba buildy
+      ARM bez ostrzeżeń, 0 różnych bajtów w trzech klatkach wzorcowych,
+      `$030F = 3F`, harness różnicowy bez różnic na 5 mln instrukcji
 - [x] wspólne budowanie etapów: `make STAGE=00 flash` (etapy z więcej niż jednym plikiem
       źródłowym mają własny `Makefile`, a etapy na komputer buduje `cc`)
 - [x] etap 00: stanowisko pracy, kompilator, wgrywanie, pierwszy program
@@ -102,9 +105,32 @@ utrudnia czytanie źródeł, ale każde pierwsze użycie ma wyjaśnienie.
 - [x] przegląd każdego etapu przez osobnego agenta (opis w REFLEKSJA.md)
 - [x] wspólne budowanie obsługuje trzy rodzaje etapów: na płytkę, na komputer
       i takie, które przynoszą własny Makefile
-- [ ] poprawki zgłoszone przez recenzentów w plikach spoza etapów: obietnica
-      zegara w etapie 00, kolejność czytania pliku w etapie 01, odniesienie
-      rozmiaru bufora do pamięci w etapie 02, nieaktualne zdania w etapie 04
-- [ ] sprawdzenie etapów na panelu (kod buduje się bez ostrzeżeń, ale efektu na panelu
-      nikt jeszcze nie widział, bo płytka ma wgrane Castlevanię III)
-- [ ] redakcja językowa i przegląd całości
+- [x] poprawki zgłoszone przez recenzentów w etapach 00-04: obietnica zegara,
+      kolejność czytania pliku, odniesienie rozmiaru bufora do pamięci,
+      nieaktualne zdania w etapie 04
+- [x] redakcja językowa wszystkich rozdziałów (cztery grupy etapów, osobny agent
+      na każdą), razem z odsyłaczami do numerów etapów i spójnością terminów
+- [ ] sprawdzenie etapów na panelu. To jedyna pozycja, której nie da się zamknąć
+      bez przerwy w graniu: trzeba wgrać etap (na przykład 04), obejrzeć obraz,
+      wgrać następny i na końcu wrócić z emulatorem na płytkę
+
+## Do decyzji przed dalszą pracą
+
+Trzy rzeczy zgłoszone przez recenzentów, których nie poprawili, bo wymagają decyzji
+autora, a nie redakcji:
+
+1. **Etap 13 czyta rejestr wyboru banku.** W tym emulatorze odczyt spod tego adresu
+   zwraca pamięć stałego banku, a nie numer banku: rejestr jest tylko do zapisu.
+   Rozdział już tego nie twierdzi, ale ćwiczenie polegające na odczytaniu numeru
+   banku nie zadziała bez zmiany kodu emulatora.
+2. **Etapy 03 i 04 oba wprowadzają zegar.** Etap 03 podnosi takt i tłumaczy arytmetykę,
+   etap 04 ma własną kopię tego kodu. Dla czytelnika to powtórka; do rozstrzygnięcia,
+   czy etap 04 ma się do 03 odwoływać, czy pokazywać pełny kod dla samodzielności.
+3. **Etapy 14 i 15 mówią w pierwszej osobie**, choć reszta przewodnika zwraca się
+   do czytelnika. Do ujednolicenia.
+
+Osobno, z przeglądu rdzenia obrazu: kod ma kilka miejsc, w których różni się od
+prawdziwego układu (kolejność duszków o tym samym priorytecie, porównywanie koloru
+tła zamiast numeru palety przy trafieniu sprite 0, zawartość bufora odczytu palety).
+Recenzent opisał je w komentarzach i nie zmieniał zachowania. To materiał na osobną
+pracę nad wiernością emulacji, a nie na refaktor.

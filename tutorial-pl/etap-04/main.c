@@ -1,23 +1,23 @@
 /*
- * Stage 4 — a framebuffer, a palette, and bands.
+ * Stage 4 — the panel protocol: five wires, and the picture sent in bands.
  *
- * Stage 00 pushed colour straight at the panel: no memory in between, so nothing
- * could be redrawn, compared or timed. This stage adds the three ideas the whole
- * display path of the emulator rests on:
+ * Stage 03 raised the clock to 80 MHz and moved the picture into a framebuffer of
+ * palette indices; both stay as they are here. What this stage adds is the path
+ * the picture takes to reach the glass:
  *
- *   1. the clock goes from the power-on ~4 MHz to 80 MHz, so there is time to
- *      do work between pixels (the PLL arithmetic is spelled out in clock_init),
- *   2. the picture lives in a framebuffer in RAM as one byte per pixel, holding
- *      an index into a palette. One byte per pixel is what makes a 256x240
- *      picture cost 60 KB instead of 120,
- *   3. the picture leaves the chip in bands. A band is a strip of scanlines
- *      converted to RGB565 and handed to the SPI. Why bands and not the whole
- *      frame: because 122,880 bytes take 24.6 ms on the wire at 40 MHz, and the
- *      emulator will spend that time emulating the next band instead of waiting.
+ *   1. the panel has no address to write to. Bytes reach it over five wires —
+ *      SCK, MOSI, CS, DC and RST — one bit per tick of the wire clock,
+ *   2. the framebuffer covers the console's 256x240 picture only, one byte per
+ *      pixel. The 32-pixel bars on either side of the panel are painted black
+ *      once at boot and never touched again,
+ *   3. the picture leaves the chip in bands. A band is eight scanlines converted
+ *      to RGB565 and handed to the SPI: the smallest piece that can be sent on
+ *      its own, so the program is not tied to the whole frame. Why that matters:
+ *      122,880 bytes take 24.6 ms on the wire at 40 MHz, longer than a frame.
  *
  * The test pattern is deliberately asymmetric: colour bars plus a white marker in
- * one corner. A solid colour hides a 180-degree rotation, which is exactly the
- * mistake stage 00's exercise was meant to show you.
+ * one corner. A solid colour hides a 180-degree rotation, which stage 00's single
+ * colour could not show.
  */
 #include <stdint.h>
 
@@ -104,10 +104,10 @@ static void data(uint8_t b) { dc(1); cs(0); spi_byte(b); cs(1); }
 
 /* ------------------------------------------------------------------- clocks */
 
-/* 16 MHz (HSI16) x 10 / 2 = 80 MHz. The three factors are the three fields of
- * the PLL register: the source, the multiplier N and the divider R. Running the
- * core at 80 MHz instead of 4 MHz is the difference between a display that
- * crawls and one that can be redrawn sixty times a second. */
+/* 16 MHz (HSI16) x 10 / 2 = 80 MHz: the clock stage 03 chose, unchanged here.
+ * The register holds the source-select bits, the multiplier N and the divider R;
+ * stage 03's chapter walks through the arithmetic. What this stage needs from it
+ * is the wire clock: the SPI gets half the core clock, so 40 MHz. */
 static void clock_init(void)
 {
     FLASH_ACR = 4u | (1u << 8) | (1u << 9) | (1u << 10);  /* wait states + caches */

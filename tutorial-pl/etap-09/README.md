@@ -1,14 +1,14 @@
 # Etap 09: duszki, czyli obraz, który się rusza
 
-W etapie 08 obraz powstał z kafli wpisanych w siatkę: każdy kafel trafiał w całą komórkę
-albo w żadną jej część. Bohater, który chce stanąć w połowie komórki, ani pocisk lecący
-w połowie wiersza nie mieszczą się w takim obrazie.
+W etapie 08 obraz powstał z kafli wpisanych w mapę: kafel zajmował całe swoje miejsce i ani
+piksela obok. Bohater, który chce stanąć w połowie kafla, ani pocisk lecący w połowie wiersza
+nie mieszczą się w takim obrazie.
 
 ## Duszek to obrazek z pozycją
 
 Ten etap dodaje drugą połowę obrazu konsoli: **duszki**, czyli małe obrazki trzymane
 osobno, z pozycją liczoną w pojedynczych pikselach. Konsola czyta je z osobnej tablicy
-wzorów, a nie z tej, z której bierze kafle tła. Duszek nie jest wpisany w siatkę, więc
+wzorów, a nie z tej, z której bierze kafle tła. Duszek nie jest wpisany w mapę, więc
 jego lewy górny róg może wypaść na dowolnym pikselu.
 
 W kodzie etapu duszek to struktura `sprite_t`, czyli pudełko z pięcioma polami: `x`, `y`,
@@ -18,17 +18,17 @@ to wymiary obrazka. Pozycja i obrazek siedzą w niej osobno i to jest cała ró�
 zmienia się tylko miejsce, w którym go kładziesz.
 
 Konsola rysuje duszki o rozmiarze osiem na osiem albo osiem na szesnaście, a większa
-postać to kilka takich kwadratów zszytych razem. Nasz bohater ma szesnaście na szesnaście,
-czyli cztery kwadraty, a jego pozycję liczymy w pikselach, więc nie musi trafiać na granicę
-kafla. Lista duszków ma trzy wpisy: bohatera, drzewo i robaka. Drzewo nigdy się nie rusza,
-a mimo to jest duszkiem. Dzięki temu nie wpisujemy go w siatkę i możemy pokazać, jak jedno
-zasłania drugie.
+postać to kilka takich kwadratów zszytych razem. Nasz bohater ma szesnaście na szesnaście
+pikseli, czyli cztery kwadraty, a jego pozycję liczymy w pikselach, więc nie musi trafiać
+na granicę kafla. Lista duszków ma trzy wpisy: bohatera, drzewo i robaka. Drzewo nigdy się
+nie rusza, a mimo to jest duszkiem. Dzięki temu nie wpisujemy go w mapę i możemy pokazać,
+jak jedno zasłania drugie.
 
 ## Obraz powstaje od nowa przy każdej klatce
 
 Nikt nie trzyma w pamięci obrazu z bohaterem w środku. Jest tło i lista duszków, a obraz
 powstaje od nowa przy każdej klatce. Funkcja `draw_frame` robi trzy rzeczy: najpierw
-`compose_background` zamienia siatkę kafli na piksele w całym buforze, potem
+`compose_background` zamienia mapę kafli na piksele w całym buforze, potem
 `compose_sprites` kładzie na tym duszki jeden po drugim, a na końcu `push_picture` wysyła
 gotowy obraz na panel. O kolejności warstw decydują dwa pierwsze wywołania. Pozycja duszka
 może wypaść za obraz; `compose_sprite` obcina wtedy rysowanie, bo duszek, którego połowa
@@ -43,7 +43,7 @@ jest prostokątem z niebieskim tłem, tylko ma kształt. W tle zero znaczy coś 
 w etapie 08 kolor zerowy był wspólnym tłem wszystkich palet. Ten etap znowu ma jedną tabelę
 ośmiu kolorów, wspólną dla tła i duszków, jak w etapie 04, ale pod numerem 0 trzyma
 niebieskie niebo. Tabela wystarcza, dopóki duszki nie używają zera. Druga reguła siedzi
-w tym samym miejscu: co raz trafiło do bufora, to zostaje. Duszek narysowany później zasłania
+w tym samym miejscu: co trafi do bufora, to zostaje. Duszek narysowany później zasłania
 wcześniejszego, więc kolejność na liście mówi, co jest z przodu:
 
 ```c
@@ -84,13 +84,13 @@ Głowa, ręka z mieczem i pas zostają takie same, a to wystarcza, żeby postać
 
 ## Dlaczego tło rysujemy od nowa
 
-Rysowanie tła od nowa w każdej klatce wygląda na marnotrawstwo, bo siatka się przecież nie
-zmienia. Powód jest ten sam, dla którego w etapie 04 obraz trafił do pamięci: gdyby tło
-zostało w buforze z poprzedniej klatki, bohater zostawiłby za sobą czerwony ślad, bo nikt
-by go nie zamalował. Można by zamalowywać stary prostokąt bohatera, ale wtedy każdy nowy
-rodzaj ruchu wymaga nowego kodu. Cena to 960 kafli na klatkę, czyli 61 440 pikseli: 32
-kafle w poziomie razy 30 w pionie, a każdy kafel to osiem na osiem. Kiedy ta cena zacznie
-boleć, zmierzymy ją w etapie 15.
+Rysowanie tła od nowa w każdej klatce wygląda na marnotrawstwo, bo mapa się przecież nie
+zmienia. Powód jest ten sam, dla którego w etapie 04 obraz trafił do pamięci: bufor jest
+jeden, więc każdą klatkę składamy od zera. Gdyby tło zostało w nim z poprzedniej klatki,
+bohater zostawiłby za sobą czerwony ślad, bo nikt by go nie zamalował. Można by zamalowywać
+stary prostokąt bohatera, ale wtedy każdy nowy rodzaj ruchu wymaga nowego kodu. Cena to
+960 kafli na klatkę, czyli 61 440 pikseli: 32 kafle w poziomie razy 30 w pionie, a każdy
+kafel to osiem na osiem. Kiedy ta cena zacznie boleć, zmierzymy ją w etapie 15.
 
 ## Co powinieneś zobaczyć
 
@@ -101,12 +101,12 @@ strony. Nogi zmieniają się co osiem klatek, co widać po stopach. Smuga za boh
 że `compose_background` nie składa tła w każdej klatce; bohater idący przed drzewem znaczy,
 że wpisy w `sprites[]` są w złej kolejności.
 
-## Sprawdzenie kompilacji
+## Zbuduj i sprawdź
 
 Z katalogu `tutorial-pl` uruchom `make STAGE=09 check`. Ta komenda tylko kompiluje kod
-i nic nie wgrywa, a kompilacja przechodzi bez ostrzeżeń przy `-Wall -Wextra`. Na płytkę
-wgrywasz ten sam kod poleceniem z `flash` zamiast `check`; obrazu nie zobaczysz na
-komputerze.
+i nic nie wgrywa, a kompilacja przechodzi bez ostrzeżeń przy `-Wall -Wextra`; to cała
+weryfikacja tego etapu. Na płytkę wgrywasz ten sam kod komendą `make STAGE=09 flash`;
+obrazu nie zobaczysz na komputerze.
 
 ## Ćwiczenia
 

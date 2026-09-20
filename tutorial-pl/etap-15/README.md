@@ -1,9 +1,9 @@
 # Etap 15: dlaczego to chodzi wolno, czyli pomiar zamiast zgadywania
 
-Gra z etapu 14 działa i chodzi wolno. Odruch podpowiada zgadywanie: pewnie winna jest pętla
+Gra z etapu 14 działa, ale chodzi wolno. Odruch podpowiada zgadywanie: pewnie winna jest pętla
 rysująca, pewnie tabela kolorów. Ten etap najpierw mierzy, a potem zmienia to, na co wskazał
-pomiar. Mierzy na małej własnej grze, planszy z ptakiem, bo chodzi o pomiar, a nie o grę.
-Efekt to ta sama gra i blisko cztery razy mniej czasu na klatkę.
+pomiar. Mierzy na małej własnej grze, planszy z ptakiem, bo obraz ma tu być prosty do
+sprawdzenia, a nie ciekawy. Efekt to ta sama klatka narysowana blisko cztery razy szybciej.
 
 ## Dwa sposoby mierzenia czasu
 
@@ -22,9 +22,10 @@ nic wspólnego. Dlatego mierzymy sześć razy i zostawiamy najszybszy przebieg.
 ## Gdzie znika klatka
 
 Klatka emulatora dzieli się na trzy fazy i każda ma w tabeli swój wiersz: procesor (wykonywanie
-rozkazów programu z kartridża), rysowanie (zamiana pamięci obrazu, czyli tablicy kafli, wzorów
-kafli i palety, na piksele) i panel (zamiana numerów kolorów na dwa bajty, które na płytce
-pojechałyby drutem). Liczby w tabeli to milisekundy na klatkę. Pierwszy pomiar wygląda tak:
+rozkazów programu z kartridża), rysowanie (zamiana pamięci układu obrazu, czyli tablicy kafli,
+wzorów kafli i palety, na piksele) i panel (zamiana numerów kolorów na dwa bajty, które na
+płytce pojechałyby drutem). Liczby w tabeli to milisekundy na klatkę. Pierwszy pomiar wygląda
+tak:
 
 ```
 milliseconds         as it was           +walk          +words  +changed bands
@@ -35,12 +36,13 @@ one frame                0.364           0.300           0.298           0.093
 frames/second             2748            3331            3351           10785
 ```
 
-Kolumny noszą nazwy zmian, które mierzą: `as it was` („jak było") to rysowanie z etapu 13,
-`+walk` pierwsza zmiana, `+words` druga, czyli gotowe pary bajtów, a `+changed bands` trzecia.
-Wiersz `one frame` sumuje trzy fazy, a `frames/second` mówi, ile klatek na sekundę wyrobiłby sam
-komputer. Rysowanie kosztuje najwięcej, procesor i panel zostają daleko za nim. Na płytce
-dochodzi do tego transmisja drutem i wolniejszy zegar, więc te liczby nie przełożą się na nią
-jeden do jednego: ten etap mierzy pracę emulatora, a nie przesyłanie obrazu.
+Nazwy kolumn mówią, jaka zmiana jest w każdej z nich zmierzona: `as it was` („jak było”) to
+rysowanie z etapu 13, `+walk` pierwsza zmiana, `+words` druga, czyli gotowe pary bajtów,
+a `+changed bands` trzecia. Wiersz `one frame` sumuje trzy fazy, a `frames/second` mówi, ile
+klatek na sekundę wyrobiłby sam komputer. Rysowanie kosztuje najwięcej, procesor i panel
+zostają daleko za nim. Na płytce dochodzi do tego transmisja drutem i wolniejszy zegar, więc te
+liczby nie przełożą się na nią jeden do jednego: ten etap mierzy pracę emulatora, a nie
+przesyłanie obrazu.
 
 ## Pierwsza zmiana: chodzić, nie liczyć
 
@@ -67,14 +69,15 @@ grze prawie stoi: ptak przesuwa się o jedno pole co czwartą klatkę, a reszta 
 rusza. Emulator rysował tymczasem wszystkie 61 440 pikseli od nowa, sześćdziesiąt razy na
 sekundę, żeby pokazać to samo.
 
-Układ obrazu wie, co się zmieniło, bo sam przyjmuje zapisy: każdy zapis do pamięci obrazu, czyli
-do tablicy kafli, zaznacza swoje **pasmo**, czyli osiem wierszy pikseli. Zapis palety, wzorów
-kafli albo rejestru przewijania zaznacza wszystkie pasma, a na końcu klatki emulator flagi
-czyści.
+Układ obrazu wie, co się zmieniło, bo sam przyjmuje zapisy: każdy zapis do pamięci układu
+obrazu, czyli do tablicy kafli, zaznacza swoje **pasmo**, czyli osiem wierszy pikseli. Zapis
+palety, wzorów kafli albo rejestru przewijania zaznacza wszystkie pasma, a na końcu klatki
+emulator flagi czyści.
 
 Wiersz `+changed bands` pokazuje, ile to daje: rysowanie 0,003 ms zamiast 0,137, cała klatka
-0,093 ms zamiast 0,364. Trzeba za to zapłacić księgowością, a przy przewijaniu oszczędność
-znika, bo wtedy zmienia się każdy wiersz obrazu.
+0,093 ms zamiast 0,364. Trzeba za to zapłacić dodatkową robotą: emulator musi przy każdym
+zapisie zapamiętać, które pasmo się zmieniło. Przy przewijaniu oszczędność znika, bo wtedy
+zmienia się każdy wiersz obrazu.
 
 ## Co powinieneś zobaczyć
 
@@ -82,34 +85,36 @@ znika, bo wtedy zmienia się każdy wiersz obrazu.
 cc -Wall -Wextra -o etap15 main.c && ./etap15
 ```
 
-Najpierw tabelę z czterema kolumnami. Liczby będą inne niż moje, bo zależą od komputera i od
-tego, co robi w tej chwili, ale układ zostanie: procesor prawie tyle samo w każdej kolumnie, bo
-jego nikt nie ruszał, rysowanie maleje po pierwszej zmianie, a po trzeciej spada do tysięcznych.
-Ile dokładnie maleje, zależy od kompilatora; ćwiczenie z optymalizacją pokazuje, że pierwsza
-zmiana potrafi nie dać nic. Pod tabelą stoją dwie liczby taktów, średnia na klatkę i ta, którą
-daje konsola (29 780), a do tego to, ile z 16,667 ms, czyli jednej sześćdziesiątej sekundy,
-zużywa ostatnia wersja. Dalej idą dwa wiersze sum kontrolnych, czyli liczb policzonych
-z zawartości obrazu: w każdym wierszu cztery identyczne wartości, bo wszystkie wersje
-narysowały ten sam obraz i wysłały te same bajty. Na końcu program wypisuje jeszcze ten obraz,
-jeden piksel na sześćdziesiąt cztery: `b` to niebieskie niebo i woda, `w` białe chmury, wzgórza
-i ptak, `g` zielona trawa, a `y` żółte drzewa i mur.
+Program mierzy 180 klatek, a potem wypisuje tabelę z czterema kolumnami. Liczby będą inne niż
+moje, bo zależą od komputera i od tego, co robi w tej chwili, ale układ zostanie: procesor
+prawie tyle samo w każdej kolumnie, bo jego nikt nie ruszał, rysowanie maleje po pierwszej
+zmianie, a po trzeciej spada do tysięcznych. Ile dokładnie maleje, zależy od kompilatora;
+ćwiczenie z optymalizacją pokazuje, że pierwsza zmiana potrafi nie dać nic. Pod tabelą stoją
+dwie liczby taktów, średnia na klatkę i ta, którą daje konsola (29 780), a do tego to, ile
+z 16,667 ms, czyli jednej sześćdziesiątej sekundy, zużywa ostatnia wersja. Dalej idą dwa wiersze
+sum kontrolnych, czyli liczb policzonych z zawartości obrazu: w każdym wierszu cztery identyczne
+wartości, bo wszystkie wersje narysowały ten sam obraz i wysłały te same bajty. Na końcu program
+wypisuje jeszcze ten obraz, jeden piksel na sześćdziesiąt cztery: `b` to niebieskie niebo i woda,
+`w` białe chmury, wzgórza i ptak, `g` zielona trawa, a `y` żółte drzewa i mur.
 
 ## Sprawdzenie
 
-Ten etap jest programem na komputer, nie na płytkę, więc wspólne `make STAGE=15 check` go nie
-zbuduje. Kompilator nie zgłasza ostrzeżeń, ale łączenie się nie udaje, i to z dwóch powodów
-(w skrócie):
+Ten etap jest programem na komputer, nie na płytkę. Wspólny `Makefile` wie o tym i buduje go
+kompilatorem systemowym, więc z katalogu `tutorial-pl` wystarczy:
 
-```
-region `RAM' overflowed by 125228 bytes
-undefined reference to `_write'
+```bash
+make STAGE=15 check    # kompilacja, zero ostrzeżeń
 ```
 
-Płytka ma 96 kilobajtów pamięci, a ten program trzyma obraz, bufor bajtów dla panelu i cały
-kartridż, czyli grubo ponad dwieście kilobajtów; stąd nadwyżka 125 228 bajtów z komunikatu.
+`check` nic nie wgrywa i nic nie zapisuje, a to samo robi ręka z katalogu `etap-15`:
+`cc -Wall -Wextra -o etap15 main.c`. Dopisanie `&& ./etap15` uruchamia program i pokazuje
+tabelę.
+
+Ten etap i tak nie zmieściłby się na płytce. Płytka ma 96 kilobajtów pamięci, a program trzyma
+obraz, bufor bajtów dla panelu i cały kartridż, czyli grubo ponad dwieście kilobajtów;
+kompilator dla procesorów Arm kończy pracę komunikatem `region 'RAM' overflowed by 125228 bytes`.
 Do tego `printf` i `clock()` potrzebują systemu, którego płytka nie ma: `_write` i jego sąsiedzi
-to funkcje, którymi program na komputerze pisze na ekran i czyta pliki. Sprawdzenie to
-`cc -Wall -Wextra -o etap15 main.c && ./etap15`.
+to funkcje, którymi program na komputerze pisze na ekran i czyta pliki.
 
 ## Ćwiczenia
 
@@ -127,10 +132,10 @@ zaznaczone pasma, więc bez niej po pierwszej klatce każde pasmo zostanie zazna
 i wersja z pomijaniem pasm zacznie rysować wszystko. Obraz się nie zmieni, zmieni się tylko
 tabela.
 
-Każ grze przewijać obraz: w funkcji `run`, w pętli klatek, dopisz przed `render_picture` dwie
-linie, `ppu_write(0x2005, frame)` i `ppu_write(0x2005, 0)`. To zapisy do rejestru przewijania
-z etapu 12; w tym kodzie nosi on numer `0x2005`. Obraz pojedzie w bok, a ostatnia kolumna straci
-całą przewagę.
+Spraw, żeby gra przewijała obraz: w funkcji `run`, w pętli klatek, dopisz przed `render_picture`
+dwie linie, `ppu_write(0x2005, frame)` i `ppu_write(0x2005, 0)`. To zapisy do rejestru
+przewijania z etapu 12; w tym kodzie nosi on numer `0x2005`. Obraz pojedzie w bok, a ostatnia
+kolumna straci całą przewagę.
 
 ## Co dalej
 

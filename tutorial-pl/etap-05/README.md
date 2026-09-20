@@ -8,12 +8,12 @@ i wysyła go na ekran.
 
 ## Procesor to kilka rejestrów i pętla
 
-Rejestr już znasz z etapu 00: miejsce w układzie, które ma adres. Rejestry procesora rządzą się
-inną zasadą: jest ich kilka, siedzą wewnątrz procesora i nie mają adresów, bo procesor sięga
-do nich bez pytania nikogo o pozwolenie. Jeden trzyma liczbę, na której liczymy (`A`), drugi
-służy za licznik (`X`). Osobno jest **licznik rozkazów** (program counter, w kodzie `pc`): liczba
-mówiąca, którą instrukcję wykonać jako następną. Cała reszta to pętla: weź rozkaz spod adresu
-w `pc`, zrób to, co mówi, wróć po następny.
+Rejestr znasz z etapu 03: miejsce w układzie, które ma adres i swoje przełączniki. Rejestry
+procesora rządzą się inną zasadą: jest ich kilka, siedzą wewnątrz procesora i nie mają adresów,
+bo procesor sięga do nich bez pytania nikogo o pozwolenie. Jeden trzyma liczbę, na której
+liczymy (`A`), drugi służy za licznik (`X`). Osobno jest **licznik rozkazów** (program counter,
+w kodzie `pc`): liczba mówiąca, którą instrukcję wykonać jako następną. Cała reszta to pętla:
+weź rozkaz spod adresu w `pc`, zrób to, co mówi, wróć po następny.
 
 Ten procesor to **6502**, ten sam, który siedzi w konsoli z tego przewodnika. Prawdziwy 6502 ma
 151 rozkazów; nasz ma dwanaście, wybranych tak, żeby dało się coś policzyć.
@@ -45,8 +45,9 @@ Z tego wynika rzecz, do której będziemy wracać: adresy to pozycje w liście. 
 programu rozkaz, a skok poniżej zacznie prowadzić gdzie indziej. Asembler, czyli program
 tłumaczący nazwy rozkazów na bajty, powstał właśnie po to, żeby przeliczać te adresy za nas.
 
-Nazwy rozkazów są prawdziwe, numery już nie: `LDA` to „load into A", `ADC` to „add with
-carry". Prawdziwy procesor zapisuje przy skoku odległość w bajtach, a nie adres; nasz wprost.
+Nazwy rozkazów są prawdziwe, numery już nie: `LDA` to „load into A", czyli wczytaj do `A`,
+a `ADC` to „add with carry", czyli dodaj z przeniesieniem. Prawdziwy procesor zapisuje przy
+skoku odległość w bajtach, a nie adres; nasz wprost.
 
 ## Cały procesor w jednej funkcji
 
@@ -61,7 +62,9 @@ typedef struct {
 ```
 
 `uint8_t` to jeden bajt, czyli liczba od 0 do 255; `uint16_t` to dwa bajty, czyli adres.
-`typedef` nadaje pudełku nazwę, żeby dalej pisać krótko `cpu_t`.
+`typedef` nadaje pudełku nazwę, żeby dalej pisać krótko `cpu_t`. To nie całe pudełko: leżą
+w nim jeszcze `sp`, dwie flagi, stos i licznik wykonanych rozkazów. Wypisałem tylko te trzy
+przegródki, bez których nie da się czytać rozkazów.
 
 Nowy jest tu także `switch`: zamiast dwunastu `if`-ów wybiera jedną z gałęzi, a każda z nich
 zmienia jeden albo dwa rejestry. Cały procesor to ten `switch`; funkcja `fetch` podaje bajty.
@@ -75,36 +78,42 @@ po kawałku. Obie flagi widać w wyniku pod nagłówkami `Z=` i `C=`.
 ## Stos, czyli skąd procesor wie, gdzie ma wrócić
 
 Stos to kupa bajtów z jedną zasadą: dokładasz na wierzch i zdejmujesz z wierzchu, nigdy
-ze środka. Kiedy procesor skacze do podprogramu rozkazem `JSR`, musi gdzieś zapisać, dokąd ma
-wrócić, więc odkłada na stos dwa bajty adresu; `RTS` zdejmuje je i skacze pod odczytany adres.
-Podprogram nie musi wiedzieć, kto go zawołał. Zmienna `sp` to numer wolnego miejsca, a stos
-rośnie w dół, więc każdy `JSR` zabiera dwa miejsca, a `RTS` je oddaje. Przy starcie stos jest
-pusty i `sp` pokazuje ostatnie wolne miejsce, pod numerem 255.
+ze środka. **Podprogram** to kawałek programu, do którego się skacze i z którego trzeba
+wrócić; w C tę samą rolę gra funkcja. Kiedy procesor skacze do podprogramu rozkazem `JSR`,
+musi gdzieś zapisać, dokąd ma wrócić, więc odkłada na stos dwa bajty adresu. `RTS` zdejmuje
+je i skacze pod odczytany adres. Podprogram nie musi wiedzieć, kto go zawołał. Zmienna `sp`
+to numer wolnego miejsca, a stos rośnie w dół, więc każdy `JSR` zabiera dwa miejsca, a `RTS`
+je oddaje. Przy starcie stos jest pusty i `sp` pokazuje ostatnie wolne miejsce, pod numerem
+255.
 
 ## Jak to uruchomić
 
-Ten etap jest programem na komputer, nie na płytkę, więc nie ma tu czego wgrywać. Wspólne
-budowanie etapów, `make STAGE=05 check`, też nie zadziała: ono przygotowuje kod dla
-mikrokontrolera i dokłada pliki startowe, których program na komputer nie potrzebuje. Budujemy
-go tak:
+Ten etap jest programem na komputer, nie na płytkę, więc nie ma tu czego wgrywać. Z katalogu
+`tutorial-pl` zbuduje go i uruchomi jedna komenda:
+
+```bash
+make STAGE=05 run
+```
+
+Wspólne budowanie etapów rozpoznaje, że to program na komputer, i sięga po kompilator
+z twojego systemu, a nie po ten do procesorów Arm. Sprawdzenie, że kod nie ma ani jednego
+ostrzeżenia, to `make STAGE=05 check`.
+
+To samo bez `make`, z katalogu `etap-05`:
 
 ```bash
 cc -Wall -Wextra -o etap05 main.c
 ./etap05
 ```
 
-Sprawdzenie, że kod nie ma ani jednego ostrzeżenia, to to samo polecenie bez tworzenia pliku:
-
-```bash
-cc -Wall -Wextra -fsyntax-only main.c
-```
+Sprawdzenie bez tworzenia pliku to `cc -Wall -Wextra -fsyntax-only main.c`.
 
 ## Co powinieneś zobaczyć
 
-Trzy programy: nagłówek, linia na każdy rozkaz i linia podsumowania. Każda linia z `A=`, `X=`
-i `SP=` pokazuje stan rejestrów **przed** rozkazem z tej samej linii, więc skutek rozkazu widać
-w linii następnej. Pierwszy program dodaje siedem sześć razy: `A` rośnie 7, 14, 21 i tak dalej,
-aż po szóstym dodaniu pokazuje 42. Kiedy `X` dochodzi do zera, flaga `Z` zmienia się na 1.
+Trzy programy, każdy z tytułem, linią na każdy rozkaz i linią podsumowania. Każda linia z `A=`,
+`X=` i `SP=` pokazuje stan rejestrów **przed** rozkazem z tej samej linii, więc skutek rozkazu
+widać w linii następnej. Pierwszy program dodaje siedem sześć razy: `A` rośnie 7, 14, 21 i tak
+dalej, aż po szóstym dodaniu pokazuje 42. Kiedy `X` dochodzi do zera, flaga `Z` zmienia się na 1.
 
 Drugi program jest krótki i cały wart przeczytania, bo widać w nim stos:
 
@@ -119,24 +128,25 @@ Drugi program jest krótki i cały wart przeczytania, bo widać w nim stos:
 
 `JSR` odkłada adres powrotu i `sp` spada z 255 na 253, bo adres to dwa bajty. `RTS` go zdejmuje,
 `sp` wraca na 255, a `pc` ląduje pod 0005. `ok` znaczy, że `A` zgadza się z oczekiwaniem,
-a `wrong` że nie.
+a `wrong`, że nie.
 
 ## Ćwiczenia
 
 Zmień w pierwszym programie liczbę dodań z 6 na 8 i popraw w `main` oczekiwanie z 42 na 56.
 Program ma policzyć siedem razy osiem, czyli 56, a test powie `wrong`, dopóki nie zmienisz także
-oczekiwania. Po każdej zmianie zbuduj program tą samą komendą `cc` i uruchom go ponownie.
+oczekiwania. Po każdej zmianie zbuduj i uruchom program ponownie.
 
 Wstaw `OP_NOP` przed rozkazem `JMP` w trzecim programie. Adresy poniżej przesuną się o jeden,
-ale `JMP` dalej prowadzi pod 0007, gdzie nie ma już `HLT`, tylko środek rozkazu `LDA #9`.
-Maszyna czyta stamtąd bajt 09 jako rozkaz. Numery rozkazów nie mają z góry narzuconego porządku
-i 09 wypada na skoku, którego nazwy nasza dwunastka nie zna, więc procesor zatrzymuje się
-komunikatem o nieznanym rozkazie. Uruchom i przeczytaj ten komunikat.
+ale `JMP` dalej prowadzi pod 0007, gdzie nie ma już `HLT`, tylko drugi bajt rozkazu `LDA #9`.
+Maszyna czyta ten bajt jako rozkaz, a numery rozkazów nie mają z góry narzuconego porządku:
+pod dziewiątką siedzi `BEQ`, czyli skok warunkowy. Ten skok potrzebuje dwóch bajtów adresu,
+a za programem nie ma już nic, więc procesor wypada poza jego koniec. Uruchom program
+i przeczytaj komunikat. To dokładnie ten rodzaj błędu, przed którym chroni asembler.
 
 Dopisz na końcu funkcji `run` wypisanie dwóch ostatnich miejsc stosu, `cpu.stack[STACK_TOP]`
 i `cpu.stack[STACK_TOP - 1]`, funkcją `printf`, tak jak robi to reszta pliku. Po drugim programie
 leżą tam dwa bajty odłożone przez `JSR`: `00` pod `STACK_TOP` i `05` pod `STACK_TOP - 1`.
-Adres 0005 zapisujemy młodszym bajtem najpierw, więc `05` ląduje wcześniej na stosie.
+Młodszy bajt adresu leży na wierzchu, dlatego `RTS` zdejmuje go pierwszy.
 
 Dopisz czwarty program: `LDX #5`, `LDA #0`, a w pętli `ADC #5` i `DEX`, aż `X` spadnie do zera.
 Ma wyjść pięć razy pięć, czyli 25, więc pamiętaj o przeliczeniu adresu w skoku.

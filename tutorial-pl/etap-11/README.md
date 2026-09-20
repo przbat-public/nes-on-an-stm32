@@ -12,12 +12,13 @@ Wciśnięty zwiera nóżkę z masą, puszczony nie robi nic.
 
 To „nic" jest kłopotliwe: nóżka bez podłączenia zbiera zakłócenia, więc program raz
 odczyta jedynkę, a raz zero. Dlatego do nóżki dołącza się rezystor **podciągający**, który
-trzyma ją na poziomie zasilania. Puszczony przycisk czytamy wtedy jako 1, wciśnięty jako 0.
+trzyma ją na poziomie zasilania. Nasz mikrokontroler ma taki rezystor w środku, a włącza go
+jedna linia w `input_init`. Puszczony przycisk czytamy wtedy jako 1, wciśnięty jako 0.
 
 Drążek ma cztery styki, niebieski przycisk siedzi osobno, czyli razem pięć wejść i pięć
 bitów. Nóżki mają nazwy z litery portu, czyli grupy wyprowadzeń, i numeru w tej grupie:
-PB4 to czwarta nóżka portu B, a PC0 to nóżka zerowa portu C. Nóżki PA0 nie ma wśród nich:
-płytka łączy ją na stałe z masą, więc program odczytałby ją zawsze jako wciśniętą.
+PB4 to czwarta nóżka portu B, a PC0 to nóżka zerowa portu C. Nóżki PA0 nie ma na tej
+liście: płytka łączy ją na stałe z masą, więc program odczytałby ją zawsze jako wciśniętą.
 
 ## Osiem przycisków po jednym drucie
 
@@ -33,10 +34,10 @@ kiedy latch jest podniesiony, i przesunąć się o jedno miejsce, kiedy konsola 
 zegarem. Wtedy skrajna komórka wypada na przewód danych.
 
 Gra czyta więc osiem kolejnych bitów z jednego drutu, zawsze w tej samej kolejności:
-A, B, Select, Start, góra, dół, lewo, prawo. Program gry widzi to jako jeden adres, $4016,
-czyli 0x4016 w naszym zapisie: zapis pod ten adres podnosi latch, a odczyt to jeden impuls
-zegara. Nasz emulowany program to na razie kilkanaście linii C i nie zna tego adresu: woła
-`read_pad` i dostaje ten sam bajt.
+A, B, Select, Start, góra, dół, lewo, prawo. Program gry widzi to jako jeden adres: `$4016`
+w dokumentacji konsoli, czyli `0x4016` w naszym zapisie. Zapis pod ten adres podnosi latch,
+a odczyt daje jeden impuls zegara. Nasz emulowany program to na razie kilkanaście linii C
+i nie zna tego adresu: woła `read_pad` i dostaje ten sam bajt.
 
 ## Jak to wygląda w kodzie
 
@@ -69,12 +70,12 @@ pyta, jak ją trzymasz: drążek leży pod palcem tak samo, ale „góra" znaczy
 | dół | PB6 | lewa |
 | lewo | PC0 | górna |
 
-Ta tabela to trzymanie pionowe obrócone o ćwierć obrotu, dlatego w każdym wierszu kierunek
-i krawędź nie pasują do siebie. Jeden ruch drążka w dłoni to jeden ruch duszka na
-ekranie. W kodzie te pary siedzą w tablicy `pad_map`, a komentarz przy każdym wpisie mówi,
-na której krawędzi płytki leży styk. Gdyby ktoś wpisał do `pad_map` nóżki z trzymania
-pionowego, drążek działałby dalej, tylko obrócony: góra przesuwałaby duszka w prawo, prawo
-w dół, dół w lewo, a lewo w górę.
+Ta tabela to trzymanie pionowe obrócone razem z płytką o ćwierć obrotu, dlatego w każdym
+wierszu kierunek i krawędź nie pasują do siebie. Jeden ruch drążka w dłoni to jeden ruch
+duszka na ekranie. W kodzie te pary siedzą w tablicy `pad_map`, a komentarz przy każdym
+wpisie mówi, na której krawędzi płytki leży styk. Gdyby ktoś wpisał do `pad_map` nóżki
+z trzymania pionowego, drążek działałby dalej, tylko obrócony: góra przesuwałaby duszka
+w prawo, prawo w dół, dół w lewo, a lewo w górę.
 
 ## Nóżka, którą trzeba odebrać debugerowi
 
@@ -85,16 +86,11 @@ jest jej właścicielem, styk drążka nie daje się odczytać: nóżka odpowiad
 debugowania, a nie rejestrowi wejść, więc jeden kierunek wygląda, jakby był wciśnięty bez
 przerwy.
 
-`input_init` odbiera ją na starcie: ustawia PB4 jako zwykłe wejście, a przy okazji mówi
-blokowi konfiguracji systemu, że debugowanie ma zostać przy SWD, czyli dwuprzewodowym
-porcie debugowania na nóżkach PA13 i PA14. Kolejność ma znaczenie: najpierw odbiór nóżki,
-potem ustawienie jej jako wejścia.
-
-## Zbuduj i sprawdź
-
-Z katalogu `tutorial-pl` uruchom `make STAGE=11 check`. Ta komenda tylko kompiluje kod
-i nic nie wgrywa, a kompilacja ma przejść bez ani jednego ostrzeżenia. Na płytkę wgrywa ten
-sam kod `make STAGE=11 flash`; obrazu nie zobaczysz na komputerze.
+`input_init` odbiera ją na starcie. Najpierw mówi blokowi konfiguracji systemu, że
+debugowanie ma zostać przy SWD, czyli dwuprzewodowym porcie debugowania na nóżkach PA13
+i PA14, a dopiero potem ustawia PB4 jako zwykłe wejście i włącza rezystor podciągający.
+Kolejność ma znaczenie: dopóki port debugowania jest właścicielem nóżki, wpis w rejestrze
+wejść nic nie daje.
 
 ## Co powinieneś zobaczyć
 
@@ -115,6 +111,13 @@ o których czytałeś przy pasmach, więc klatka nie wypada częściej niż oko�
 na sekundę, a do tego dochodzi jeszcze czas rysowania. Program wysyła obraz jednym kawałkiem
 i czeka, aż panel go przyjmie; przerwań z etapu 10 tu nie ma, bo w czasie transmisji nie ma
 nic innego do roboty.
+
+## Zbuduj i sprawdź
+
+Z katalogu `tutorial-pl` uruchom `make STAGE=11 check`. Ta komenda tylko kompiluje kod
+i nic nie wgrywa, a kompilacja przechodzi bez ostrzeżeń przy `-Wall -Wextra`; to cała
+weryfikacja tego etapu. Na płytkę wgrywasz ten sam kod komendą `make STAGE=11 flash`;
+obrazu nie zobaczysz na komputerze.
 
 ## Ćwiczenia
 

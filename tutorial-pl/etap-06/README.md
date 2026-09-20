@@ -43,6 +43,7 @@ pamięci i w tym etapie wygląda tak:
 Dwa adresy, `0x0080` i `0x0081`, nie są pamięcią. Obsługują je te same dwie funkcje, ale
 zamiast sięgać do tablicy, zmieniają licznik albo zapisują wynik. Nic tego nie pilnuje:
 program, który wyjdzie poza swoje dane, zje własny kod. Mapa to umowa, nie bezpiecznik.
+Pamięć urywa się pod `0x7FFF`, bo 32 kilobajty to wszystko, co ta maszyna ma.
 
 ## Program, który zmienia sam siebie
 
@@ -60,15 +61,16 @@ nie ma pojęcia, czy zmienia zmienną, czy kawałek programu.
 
 ## Pamięć kontra rejestr sprzętowy
 
-Drugi program czyta ten sam adres dwa razy i za każdym razem dostaje inną liczbę:
+Ten sam program czyta jeden adres dwa razy. Gdy pod tym adresem leży zwykła pamięć, oba
+odczyty dają to samo. Gdy leży tam rejestr sprzętowy, każdy odczyt może dać inną liczbę:
 
     LDA  0xFF     A = bajt spod adresu, który siedzi w 0x0010
     ADC  0xFF     A = A + ten sam bajt jeszcze raz
     STA  0x30     bajt spod 0x0030 = A
     HLT  0x00     stop
 
-`0xFF` to umówiony znak, że argumentem nie jest adres, tylko adres schowany w pamięci pod
-`0x0010`. Argument rozkazu ma jeden bajt, więc zmieściłby się w nim każdy adres od `0x00`
+`0xFF` to umówiony znak, że argument nie jest adresem: prawdziwy adres leży w dwóch bajtach
+pod `0x0010`. Argument rozkazu ma jeden bajt, więc zmieściłby się w nim każdy adres od `0x00`
 do `0xFF`. Umawiamy się, że ostatnia wartość nie jest adresem, tylko odsyłaczem, i adres
 `0x00FF` zostaje poza zasięgiem zwykłych rozkazów. Dzięki temu ten sam program można
 skierować w dwa miejsca, nie zmieniając w nim ani jednego bajtu.
@@ -82,24 +84,24 @@ takiego rejestru bywa rozkazem dla układu: „wyślij obraz", „przewiń ekran
 ## Jak to uruchomić
 
 To program na komputer, nie na płytkę: procesor i pamięć z tego etapu to model, a nie układy
-na biurku. Panel wraca w etapie 08. Buduje się go tak:
+na biurku. Panel wraca w etapie 08. Z katalogu `tutorial-pl` zbuduje go i uruchomi jedna
+komenda:
+
+```bash
+make STAGE=06 run
+```
+
+Wspólne budowanie etapów rozpoznaje, że to program na komputer, i sięga po kompilator
+z twojego systemu. Sprawdzenie, że kod nie ma ani jednego ostrzeżenia, to `make STAGE=06 check`.
+
+To samo bez `make`, z katalogu `etap-06`:
 
 ```bash
 cc -Wall -Wextra -o etap06 main.c
 ./etap06
 ```
 
-Sprawdzenie, że kod nie ma ani jednego ostrzeżenia, to to samo polecenie bez tworzenia pliku:
-
-```bash
-cc -Wall -Wextra -fsyntax-only main.c
-```
-
-Komenda `make STAGE=06 check` z katalogu `tutorial-pl` nie zadziała i to jest w porządku:
-ten Makefile buduje etapy dla mikrokontrolera i dokłada `startup_l476.s` oraz `linker.ld`,
-które dla programu na komputer nie mają sensu. Kompilacja etapu przechodzi bez ani jednego
-ostrzeżenia, ale gotowego programu nie da się złożyć, bo `printf` wypisuje tekst przez system,
-którego na płytce nie ma.
+Sprawdzenie bez tworzenia pliku to `cc -Wall -Wextra -fsyntax-only main.c`.
 
 ## Co powinieneś zobaczyć
 

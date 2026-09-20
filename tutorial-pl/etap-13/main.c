@@ -35,10 +35,10 @@
  * What to look for on the panel: the picture is drawn by two pieces of
  * program that have never been in memory at the same time. Bank 0 draws the
  * top half of the screen, bank 1 the bottom half, and the game calls one,
- * switches, calls the other, over and over while it runs. Both halves use a
- * different tile, and each bank reads the register to find out which bank it
- * is, so the colour the picture shows comes from what the cartridge itself
- * put in the window.
+ * switches, calls the other, over and over while it runs. Each half uses a
+ * different tile, and each bank writes a colour of its own into a palette
+ * entry of its own; the two entries stay two apart, which is what the host
+ * check in host/host_check.c reads back every frame.
  */
 #include <stdint.h>
 #include "cpu.h"

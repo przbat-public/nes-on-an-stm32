@@ -1,7 +1,35 @@
 /*
  * cpu6502.c — the emulated 6502 core.
  *
- * Structure:
+ * What this module owns: the registers, the status flags, the stack, the
+ * addressing modes and the 256 opcodes, plus the cycle cost of each
+ * instruction (the PPU and the frame loop pace themselves by that
+ * number, so the costs are part of the contract, not a detail). What it
+ * deliberately does not own: anything about the NES — no address is
+ * decoded here, and no memory is stored here.
+ *
+ * What it assumes about the layer below: two byte-wide accessors,
+ * bus_read(addr) and bus_write(addr, value). The core never learns
+ * whether they touch RAM, cartridge ROM, a mapper register or a PPU
+ * register, which is why this file compiles and runs unchanged on the PC
+ * (`tools/host_test.c`, `tools/host_render.c`, `tools/diff_test.c`) —
+ * reproducing a bug on the PC is the first step of every fix. Whether
+ * the accessors are calls into nes.c or the inline fast paths of
+ * nesmem.h is a link-time choice (NES_BUS_INLINE); this file only needs
+ * them declared, and cpu6502.h does that.
+ *
+ * The circuit quirks that shaped the file:
+ *   - the 2A03 is a 6502 without decimal mode, so the D flag is stored
+ *     and pushed like any other bit but never changes a result; SED/CLD
+ *     and PLP work, ADC/SBC stay binary. That matches the real chip.
+ *   - the CPU is memory-mapped into the same 64 KB as everything else,
+ *     so the stack is not a private buffer but page 1 of that space and
+ *     the three vectors live at the top of it.
+ *   - the indirect JMP reproduces the chip's page-boundary bug, and
+ *     branches cost one cycle more when they cross a page; both are
+ *     visible in games, so both are emulated rather than fixed.
+ *
+ * Structure, and why it is unusual:
  *   - the 6502 registers live in *automatic variables inside cpu_run()*
  *     (pc/a/x/y/sp/p), together with the per-instruction cycle counter
  *     (cyc) and the page-cross flag (page). They are ordinary locals
@@ -22,6 +50,10 @@
  *     and is written entirely in those macros, one case per opcode:
  *     a load is `a = RD(ZP()); SETZN(a)`, an ALU op is `A_ORA(RD(INX()))`,
  *     a store is `WR(ABS_(), a)`, a branch is `BRANCH_TAKE(!(p & F_Z))`.
+ *     That is why the file looks like one long function: the registers
+ *     must be locals of the function the instruction bodies are inlined
+ *     into, so the batch loop, the dispatch and the accounting cannot be
+ *     split off into helpers without giving up the registers.
  *
  * Each macro evaluates every argument at most once, in the same places
  * the functions it replaced evaluated it, so an operand with a side
@@ -37,9 +69,6 @@
  * cpu_irq) touches the struct directly. That matters for nes.c, which
  * calls cpu_nmi()/cpu_irq() between cpu_run() batches, and for the SWD
  * debugger, which reads `cpu` while the board runs.
- *
- * The NES's 2A03 has no decimal mode, so the D flag is stored but never
- * changes arithmetic behaviour (as on real hardware).
  */
 #include "cpu6502.h"
 
@@ -50,8 +79,43 @@
 cpu_t cpu;
 
 /* charged by the bus for things like OAM DMA: the CPU really does stop
- * for these cycles, so they must come out of the frame budget too */
+ * for these cycles, so they must come out of the frame budget too. The
+ * dispatch loop below adds it to the instruction in progress and zeroes
+ * it again, so one stall is charged to exactly one instruction. */
 int cpu_stall;
+
+/* ------------------------- 6502 constants ------------------------- */
+/* The stack is memory like any other: the chip hardwires page 1, and the
+ * core starts a program with sp at 0xFD, which is where the Famicom/NES
+ * reset code leaves it. A program that never touches sp therefore has
+ * 253 usable bytes below it. */
+#define STACK_PAGE        ((uint16_t)0x0100)
+#define SP_AFTER_RESET    0xFD
+
+/* The three vectors sit in the top page in the chip's fixed order. On a
+ * NES only the NMI comes from outside (the PPU raises it at vblank); IRQ
+ * comes from the mapper, and RESET is the power-on line, which this core
+ * handles in cpu_reset() rather than as an interrupt. */
+#define NMI_VECTOR        ((uint16_t)0xFFFA)
+#define RESET_VECTOR      ((uint16_t)0xFFFC)
+#define IRQ_VECTOR        ((uint16_t)0xFFFE)
+
+/* The 6502 splits its 16-bit addresses into 256-byte pages, and its
+ * arithmetic uses those seams:
+ *   - a read (never a write) through an indexed address costs one extra
+ *     cycle when the index carries into the page's high byte: the
+ *     addressing macros here only raise the `page` flag, and the
+ *     generated case in cpu_ops.h decides whether to charge it;
+ *   - a zero-page pointer wraps inside page 0 instead of running into
+ *     page 1, which is how a program keeps a 256-byte table in bounds;
+ *   - an indirect JMP reads the second half of its pointer in the same
+ *     page as the first half, which is the chip's best-known bug. */
+#define PAGE_MASK         ((uint16_t)0xFF00u)
+#define ZERO_PAGE_MASK    0xFFu
+
+/* Taking an interrupt is seven cycles: three to push pc and the status
+ * byte, two to read the vector, two of overhead. */
+#define INTERRUPT_CYCLES  7
 
 /* --------------------------- macro toolkit ------------------------ */
 /* These are statement/expression macros over the locals of cpu_run();
@@ -98,38 +162,43 @@ int cpu_stall;
 void cpu_reset(void)
 {
     cpu.a = cpu.x = cpu.y = 0;
-    cpu.sp = 0xFD;
-    cpu.p  = F_I | F_U;
-    cpu.pc = (uint16_t)(bus_read(0xFFFC) | (bus_read(0xFFFD) << 8));
+    cpu.sp = SP_AFTER_RESET;
+    cpu.p  = F_I | F_U;         /* no IRQs until the program says so */
+    cpu.pc = (uint16_t)(bus_read(RESET_VECTOR) | (bus_read(RESET_VECTOR + 1) << 8));
     cpu.cycles = 0;
     cpu.instructions = 0;
 }
 
 /* shared by cpu_nmi()/cpu_irq(): push pc and the status byte, mask IRQs
- * and jump through the vector at `vector` */
+ * and jump through the vector at `vector`. The pushed status has B set
+ * (this is an interrupt, not a BRK) and U forced to 1, and the B bit
+ * pushed here is the one PLP and RTI throw away again — the flag only
+ * ever exists on the stack. */
 static void interrupt_enter(uint16_t vector)
 {
-    bus_write((uint16_t)(0x0100 + cpu.sp--), (uint8_t)(cpu.pc >> 8));
-    bus_write((uint16_t)(0x0100 + cpu.sp--), (uint8_t)(cpu.pc & 0xFF));
-    bus_write((uint16_t)(0x0100 + cpu.sp--), (uint8_t)((cpu.p & ~F_B) | F_U));
+    bus_write((uint16_t)(STACK_PAGE + cpu.sp--), (uint8_t)(cpu.pc >> 8));
+    bus_write((uint16_t)(STACK_PAGE + cpu.sp--), (uint8_t)(cpu.pc & 0xFF));
+    bus_write((uint16_t)(STACK_PAGE + cpu.sp--), (uint8_t)((cpu.p & ~F_B) | F_U));
     cpu.p |= F_I;
     cpu.pc = (uint16_t)(bus_read(vector) | (bus_read((uint16_t)(vector + 1)) << 8));
-    cpu.cycles += 7;
+    cpu.cycles += INTERRUPT_CYCLES;
 }
 
 /* called from the frame loop between cpu_run() batches: the struct is
  * honest there (cpu_run() wrote it back when it returned), so the
- * interrupt can work on it directly */
+ * interrupt can work on it directly. An NMI cannot be masked, which is
+ * why this one returns nothing while cpu_irq() reports whether it was
+ * taken — nes.c has to know, because a masked IRQ line stays asserted. */
 void cpu_nmi(void)
 {
-    interrupt_enter(0xFFFA);
+    interrupt_enter(NMI_VECTOR);
 }
 
 bool cpu_irq(void)
 {
     if (cpu.p & F_I)            /* masked: the line stays asserted */
         return false;
-    interrupt_enter(0xFFFE);
+    interrupt_enter(IRQ_VECTOR);
     return true;
 }
 
@@ -139,7 +208,8 @@ bool cpu_irq(void)
  *
  * A budget of one cycle buys exactly one instruction because every
  * instruction charges at least two (see the `cyc == 0` guard below), so
- * cpu_run() cannot fit a second one into it. */
+ * cpu_run() cannot fit a second one into it: the budget is a whole
+ * number of instructions, never a fraction of one. */
 int cpu_step(void)
 {
     return cpu_run(1);
@@ -148,7 +218,10 @@ int cpu_step(void)
 /* The hot path: copy the registers into true locals once, run
  * instructions against them until the cycle budget is spent, copy them
  * back once. The macros below are the only way the instruction bodies
- * can reach those locals. */
+ * can reach those locals. The batch loop inside cpu_ops.h publishes
+ * cpu.cycles and cpu.instructions as it goes, because those two are the
+ * debugger's and the frame loop's counters and nothing else has to be
+ * woken up per instruction. */
 int cpu_run(int32_t budget)
 {
     uint16_t pc = cpu.pc;
@@ -170,8 +243,8 @@ int cpu_run(int32_t budget)
 
     /* ----------------------------- stack -------------------------- */
     /* same shape as the old push()/pull(): `sp--`/`++sp` appear once */
-#define PUSH(v)           do { uint8_t m6502_s = (uint8_t)(v); bus_write((uint16_t)(0x0100 + sp--), m6502_s); } while (0)
-#define PULL()            ((uint8_t)bus_read((uint16_t)(0x0100 + ++sp)))
+#define PUSH(v)           do { uint8_t m6502_s = (uint8_t)(v); bus_write((uint16_t)(STACK_PAGE + sp--), m6502_s); } while (0)
+#define PULL()            ((uint8_t)bus_read((uint16_t)(STACK_PAGE + ++sp)))
     /* pushes are three separate statements, so pc/p has no way to be
      * evaluated more than once by this macro */
 #define PUSH16(v)         do { uint16_t m6502_t = (uint16_t)(v); PUSH((uint8_t)(m6502_t >> 8)); PUSH((uint8_t)(m6502_t & 0xFF)); } while (0)
@@ -180,17 +253,20 @@ int cpu_run(int32_t budget)
 #define PULL16()          ((uint16_t)({ uint8_t m6502_lo = PULL(); (uint16_t)(m6502_lo | (PULL() << 8)); }))
 
     /* -------------------------- addressing ------------------------ */
+    /* IMM() is the odd one out: it hands back the address of the operand
+     * byte, not the byte, because every caller reads through it
+     * (`RD(IMM())`) — it only steps pc, exactly as the old helper. */
 #define IMM()             ((uint16_t)(pc++))
 #define ZP()              (FETCH8())
-#define ZPX()             (uint16_t)((FETCH8() + x) & 0xFF)
-#define ZPY()             (uint16_t)((FETCH8() + y) & 0xFF)
+#define ZPX()             (uint16_t)((FETCH8() + x) & ZERO_PAGE_MASK)
+#define ZPY()             (uint16_t)((FETCH8() + y) & ZERO_PAGE_MASK)
 #define ABS_()            ({ uint8_t m6502_lo = FETCH8(); uint8_t m6502_hi = FETCH8(); (uint16_t)(m6502_lo | (m6502_hi << 8)); })
-#define ABX()             ({ uint16_t m6502_b = ABS_(); uint16_t m6502_e = (uint16_t)(m6502_b + x); page = (((m6502_b ^ m6502_e) & 0xFF00) ? 1 : 0); m6502_e; })
-#define ABY()             ({ uint16_t m6502_b = ABS_(); uint16_t m6502_e = (uint16_t)(m6502_b + y); page = (((m6502_b ^ m6502_e) & 0xFF00) ? 1 : 0); m6502_e; })
+#define ABX()             ({ uint16_t m6502_b = ABS_(); uint16_t m6502_e = (uint16_t)(m6502_b + x); page = (((m6502_b ^ m6502_e) & PAGE_MASK) ? 1 : 0); m6502_e; })
+#define ABY()             ({ uint16_t m6502_b = ABS_(); uint16_t m6502_e = (uint16_t)(m6502_b + y); page = (((m6502_b ^ m6502_e) & PAGE_MASK) ? 1 : 0); m6502_e; })
 /* (indirect,X): zero-page pointer with wraparound */
 #define INX()             ({ uint8_t m6502_z = (uint8_t)(FETCH8() + x); uint8_t m6502_lo = RD(m6502_z); uint8_t m6502_hi = RD((uint8_t)(m6502_z + 1)); (uint16_t)(m6502_lo | (m6502_hi << 8)); })
 /* (indirect),Y: zero-page pointer, then add Y */
-#define INY()             ({ uint8_t m6502_z = FETCH8(); uint8_t m6502_lo = RD(m6502_z); uint8_t m6502_hi = RD((uint8_t)(m6502_z + 1)); uint16_t m6502_b = (uint16_t)(m6502_lo | (m6502_hi << 8)); uint16_t m6502_e = (uint16_t)(m6502_b + y); page = (((m6502_b ^ m6502_e) & 0xFF00) ? 1 : 0); m6502_e; })
+#define INY()             ({ uint8_t m6502_z = FETCH8(); uint8_t m6502_lo = RD(m6502_z); uint8_t m6502_hi = RD((uint8_t)(m6502_z + 1)); uint16_t m6502_b = (uint16_t)(m6502_lo | (m6502_hi << 8)); uint16_t m6502_e = (uint16_t)(m6502_b + y); page = (((m6502_b ^ m6502_e) & PAGE_MASK) ? 1 : 0); m6502_e; })
 
     /* ----------------------------- flags -------------------------- */
     /* `v` is used twice here (once per flag); every caller passes a
@@ -237,7 +313,12 @@ int cpu_run(int32_t budget)
 #define DEC8(v)           ({ uint8_t m6502_v = (uint8_t)((uint8_t)(v) - 1); SETZN(m6502_v); m6502_v; })
 
     /* --------------------------- control flow --------------------- */
-    /* BRANCH_TAKE(c) evaluates the condition once, into a local */
+    /* BRANCH_TAKE(c) evaluates the condition once, into a local. Both
+     * instruction lengths are fixed: the not-taken branch is two cycles
+     * and the displacement byte is still fetched, which is why the fetch
+     * happens before the test. The penalty is for the destination page,
+     * and the same `pc + (int8_t)offset` also covers the backward branch
+     * — a jump from $0100 to $00FF is one page crossing, not a borrow. */
 #define BRANCH_TAKE(c)    do { \
         int m6502_take = (c) ? 1 : 0; \
         int8_t m6502_off = (int8_t)FETCH8(); \
@@ -245,10 +326,15 @@ int cpu_run(int32_t budget)
         else { \
             uint16_t m6502_o = pc; \
             pc = (uint16_t)(pc + m6502_off); \
-            cyc = 3 + (((m6502_o ^ pc) & 0xFF00) ? 1 : 0); \
+            cyc = 3 + (((m6502_o ^ pc) & PAGE_MASK) ? 1 : 0); \
         } \
     } while (0)
-    /* the famous page-boundary bug of the indirect jump */
+    /* the famous page-boundary bug of the indirect jump: the second half
+     * of the pointer is read from the start of the *same* page, not from
+     * the next one, so a vector sitting at $xxFF yields
+     * ($xx00 << 8) | low. The chip does this, and a program that keeps a
+     * jump table across the seam relies on it — "fixing" it here would
+     * move those jumps somewhere else entirely. */
 #define JMP_IND()         do { \
         uint16_t m6502_p = ABS_(); \
         uint16_t m6502_lo = RD(m6502_p); \
